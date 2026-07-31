@@ -60,9 +60,13 @@ def get_muscle(muscle_group: str, window: str = Query("last-week")) -> dict[str,
 
 
 @app.get("/api/trend")
-def get_trend(weeks: int = Query(8, ge=1, le=52), muscle_group: str | None = None) -> dict[str, Any]:
+def get_trend(
+    weeks: int = Query(8, ge=1, le=52),
+    muscle_group: str | None = None,
+    include_current: bool = Query(True, description="include the in-progress week, flagged partial"),
+) -> dict[str, Any]:
     with repo() as repository:
-        return queries.volume_trend(repository, _config, weeks, muscle_group)
+        return queries.volume_trend(repository, _config, weeks, muscle_group, include_current)
 
 
 @app.get("/api/strength")

@@ -223,7 +223,7 @@
 
   <section class="card">
     <div class="head">
-      <div><h2>Weekly volume</h2><div class="desc">Total effective sets per week, all muscle groups.</div></div>
+      <div><h2>Weekly volume</h2><div class="desc">Total effective sets per week, all muscle groups. The current week is included and still filling up.</div></div>
       <span class="spacer"></span>
       <button class="toggle" data-table="trendTable" aria-pressed="false">Table</button>
     </div>
@@ -240,11 +240,11 @@
 
   <div class="grid2">
     <section class="card">
-      <div class="head"><div><h2>Runs</h2><div class="desc">Last 4 complete weeks.</div></div></div>
+      <div class="head"><div><h2>Runs</h2><div class="desc">Last 28 days, up to today.</div></div></div>
       <div class="scroll-x" id="runs"></div>
     </section>
     <section class="card">
-      <div class="head"><div><h2>Recovery</h2><div class="desc">Sleep, resting heart rate and steps.</div></div></div>
+      <div class="head"><div><h2>Recovery</h2><div class="desc">Sleep, resting heart rate and steps — last 14 days.</div></div></div>
       <div class="scroll-x" id="healthTable"></div>
     </section>
   </div>
@@ -552,12 +552,19 @@ function drawTrend(container, tableBox, trend) {
     if (hgt > 0) svg.appendChild(el("path", { d: barPath(x, y, w, hgt, 4, "up"), fill: "var(--series-1)" }));
     svg.appendChild(el("text", { x: x + w / 2, y: H - 12, "text-anchor": "middle", fill: "var(--muted)", "font-size": 11 },
       shortDate(r.week_starting)));
+    // The in-progress week is genuinely lower because it is unfinished; say so
+    // in words rather than leaving a short bar to be misread as a drop.
+    if (r.partial) {
+      svg.appendChild(el("text", { x: x + w / 2, y: Math.max(y - 6, 10), "text-anchor": "middle",
+        fill: "var(--muted)", "font-size": 10 }, "in progress"));
+    }
 
     const hit = el("rect", { x, y: M.t, width: w, height: ih, fill: "transparent" });
     hit.addEventListener("mousemove", (evt) => showTip(evt, "Week of " + shortDate(r.week_starting), [
       `${fmt(r.effective_sets)} effective sets`,
       `${r.working_sets} working sets · ${r.workouts} workouts`,
-    ]));
+      r.partial ? "week still in progress" : null,
+    ].filter(Boolean)));
     hit.addEventListener("mouseleave", hideTip);
     svg.appendChild(hit);
   });
@@ -572,7 +579,7 @@ function drawTrend(container, tableBox, trend) {
   const tbody = h("tbody");
   for (const r of rows) {
     tbody.appendChild(h("tr", {}, [
-      h("td", {}, r.week_starting),
+      h("td", {}, r.week_starting + (r.partial ? " (in progress)" : "")),
       h("td", { class: "num" }, fmt(r.effective_sets)),
       h("td", { class: "num" }, String(r.working_sets ?? "–")),
       h("td", { class: "num" }, String(r.workouts ?? "–")),
@@ -737,7 +744,7 @@ async function refetchScoped() {
   try {
     const [vol, trend, strength] = await Promise.all([
       fetch(`/api/volume?window=${state.window}`).then((r) => r.json()),
-      fetch(`/api/trend?weeks=${state.weeks}`).then((r) => r.json()),
+      fetch(`/api/trend?weeks=${state.weeks}&include_current=true`).then((r) => r.json()),
       fetch(`/api/strength?weeks=${Math.max(state.weeks, 8)}`).then((r) => r.json()),
     ]);
     state.data.volume = vol;

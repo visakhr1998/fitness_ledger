@@ -174,10 +174,22 @@ def neglected(
 
 
 def volume_trend(
-    repo: SQLiteRepository, config: Config, weeks: int = 8, muscle_group: str | None = None
+    repo: SQLiteRepository,
+    config: Config,
+    weeks: int = 8,
+    muscle_group: str | None = None,
+    include_current: bool = False,
 ) -> dict[str, Any]:
-    """Week-by-week effective sets, for the whole body or one muscle group."""
-    start, end = parse_window(f"last-{weeks}-weeks", week_starts_on=config.week_starts_on)
+    """Week-by-week effective sets, for the whole body or one muscle group.
+
+    ``include_current`` adds the in-progress week, flagged ``partial``. It is off
+    by default because a part-finished week would drag down any trailing average
+    computed from this series -- but a dashboard that omits it looks like the
+    data stopped days ago.
+    """
+    current_week = week_start(date.today(), config.week_starts_on)
+    start = current_week - timedelta(days=7 * weeks)
+    end = current_week + timedelta(days=7) if include_current else current_week
     sets = repo.get_sets(start, end)
     templates = repo.get_templates()
     series = weekly_series(
@@ -192,6 +204,7 @@ def volume_trend(
     muscle = muscle_group.strip().lower().replace(" ", "_") if muscle_group else None
     rows = []
     for rollup in series:
+        partial = rollup.start == current_week
         if muscle:
             entry = rollup.get(muscle)
             rows.append(
@@ -200,6 +213,7 @@ def volume_trend(
                     "effective_sets": round(entry.effective_sets, 2),
                     "frequency": entry.frequency,
                     "workouts": rollup.workouts,
+                    "partial": partial,
                 }
             )
         else:
@@ -211,6 +225,7 @@ def volume_trend(
                     ),
                     "working_sets": rollup.working_sets,
                     "workouts": rollup.workouts,
+                    "partial": partial,
                 }
             )
     return {"muscle_group": muscle, "weeks": rows}
@@ -427,11 +442,13 @@ def dashboard(repo: SQLiteRepository, config: Config) -> dict[str, Any]:
         "strength": strength_progress(repo, config),
         "volume": volume_report(repo, config, "this-week"),
         "last_week": volume_report(repo, config, "last-week"),
-        "trend": volume_trend(repo, config, weeks=8),
+        "trend": volume_trend(repo, config, weeks=8, include_current=True),
         "insights": insight_report(repo, config),
         "progression": progression_report(repo, config),
-        "runs": run_log(repo, config, "last-4-weeks"),
-        "health": health_summary(repo, config, "last-2-weeks"),
+        # Day-based windows, so these run right up to today. Week-based ones
+        # would stop at the last complete week and look like stale data.
+        "runs": run_log(repo, config, "last-28-days"),
+        "health": health_summary(repo, config, "last-14-days"),
     }
 
 
