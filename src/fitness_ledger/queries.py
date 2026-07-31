@@ -14,7 +14,9 @@ from typing import Any
 
 from .config import Config
 from .db import SQLiteRepository
+from .insights import detect
 from .models import VolumeTarget
+from .progression import RepRange, main_lifts, progression_state, stalled
 from .volume import (
     best_set_per_session,
     compute_volume,
@@ -324,6 +326,112 @@ def health_summary(
     return {
         "window": describe_window(start, end),
         "days": [days[key] for key in sorted(days)],
+    }
+
+
+def rep_ranges(repo: SQLiteRepository, config: Config) -> dict[str, RepRange]:
+    """Per-exercise overrides on top of the configured default."""
+    return {
+        template_id: RepRange(low, high)
+        for template_id, (low, high) in repo.get_rep_ranges().items()
+    }
+
+
+def progression_report(
+    repo: SQLiteRepository, config: Config, weeks: int = 12, limit: int = 8
+) -> list[dict[str, Any]]:
+    """Double-progression state for the lifts trained most often."""
+    end = date.today() + timedelta(days=1)
+    start = end - timedelta(weeks=weeks)
+    sets = repo.get_sets(start, end)
+    templates = repo.get_templates()
+    overrides = rep_ranges(repo, config)
+    default = RepRange(config.rep_range_low, config.rep_range_high)
+
+    rows = []
+    for template_id, title in main_lifts(sets, limit=limit):
+        template = templates.get(template_id)
+        state = progression_state(
+            sets,
+            template_id,
+            title,
+            rep_range=overrides.get(template_id, default),
+            equipment_category=template.equipment_category if template else None,
+        )
+        row = state.as_dict()
+        row["stalled"] = stalled(sets, template_id)
+        rows.append(row)
+    return rows
+
+
+def insight_report(repo: SQLiteRepository, config: Config) -> list[dict[str, Any]]:
+    """Run every detection rule against the cache."""
+    today = date.today()
+    start = today - timedelta(weeks=12)
+    end = today + timedelta(days=1)
+    default = RepRange(config.rep_range_low, config.rep_range_high)
+    overrides = rep_ranges(repo, config)
+
+    found = detect(
+        repo.get_sets(start, end),
+        repo.get_templates(),
+        get_targets(repo),
+        repo.get_sleep_minutes(start, end),
+        today,
+        secondary_weight=config.secondary_weight,
+        count_warmup_sets=config.count_warmup_sets,
+        week_starts_on=config.week_starts_on,
+        rep_ranges={**{k: default for k in overrides}, **overrides},
+    )
+    return [insight.as_dict() for insight in found]
+
+
+def strength_progress(
+    repo: SQLiteRepository, config: Config, weeks: int = 16, limit: int = 6
+) -> dict[str, Any]:
+    """Estimated 1RM series per main lift -- the dashboard's primary view."""
+    end = date.today() + timedelta(days=1)
+    start = end - timedelta(weeks=weeks)
+    sets = repo.get_sets(start, end)
+
+    series = []
+    for template_id, title in main_lifts(sets, limit=limit):
+        sessions = best_set_per_session(sets, template_id)
+        if len(sessions) < 2:
+            continue
+        first, last = sessions[0], sessions[-1]
+        series.append(
+            {
+                "exercise_template_id": template_id,
+                "exercise": title,
+                "points": [
+                    {
+                        "date": entry["date"].isoformat(),
+                        "estimated_1rm_kg": entry["e1rm"],
+                        "weight_kg": entry["weight_kg"],
+                        "reps": entry["reps"],
+                    }
+                    for entry in sessions
+                ],
+                "change_kg": round(last["e1rm"] - first["e1rm"], 1),
+                "latest_e1rm_kg": last["e1rm"],
+            }
+        )
+    return {"window": describe_window(start, end), "series": series}
+
+
+def dashboard(repo: SQLiteRepository, config: Config) -> dict[str, Any]:
+    """Everything the front page needs, in one round trip."""
+    return {
+        "generated_at": date.today().isoformat(),
+        "strength": strength_progress(repo, config),
+        "volume": volume_report(repo, config, "this-week"),
+        "last_week": volume_report(repo, config, "last-week"),
+        "trend": volume_trend(repo, config, weeks=8),
+        "insights": insight_report(repo, config),
+        "progression": progression_report(repo, config),
+        "runs": run_log(repo, config, "last-4-weeks"),
+        "health": health_summary(repo, config, "last-2-weeks"),
     }
 
 

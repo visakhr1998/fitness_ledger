@@ -92,6 +92,14 @@ CREATE TABLE IF NOT EXISTS sync_state (
     key   TEXT PRIMARY KEY,
     value TEXT
 );
+
+-- Rep ranges are intent, and a logged set does not record intent, so they are
+-- configuration rather than something inferred from history.
+CREATE TABLE IF NOT EXISTS exercise_progression (
+    exercise_template_id TEXT PRIMARY KEY,
+    rep_low              INTEGER NOT NULL,
+    rep_high             INTEGER NOT NULL
+);
 """
 
 
@@ -410,6 +418,28 @@ class SQLiteRepository:
             [(t.muscle_group, t.sets_per_week, t.frequency_per_week) for t in targets],
         )
         self.conn.commit()
+
+    def get_rep_ranges(self) -> dict[str, tuple[int, int]]:
+        cur = self.conn.execute("SELECT * FROM exercise_progression")
+        return {row["exercise_template_id"]: (row["rep_low"], row["rep_high"]) for row in cur}
+
+    def set_rep_range(self, exercise_template_id: str, low: int, high: int) -> None:
+        self.conn.execute(
+            """INSERT INTO exercise_progression (exercise_template_id, rep_low, rep_high)
+               VALUES (?, ?, ?)
+               ON CONFLICT(exercise_template_id) DO UPDATE SET
+                 rep_low=excluded.rep_low, rep_high=excluded.rep_high""",
+            (exercise_template_id, low, high),
+        )
+        self.conn.commit()
+
+    def get_sleep_minutes(self, start: date, end: date) -> dict[date, float]:
+        """Sleep minutes keyed by the morning woken, for the recovery rule."""
+        return {
+            day: minutes
+            for day, minutes in self.get_health_daily("sleep_minutes_asleep", start, end)
+            if minutes is not None
+        }
 
     def get_state(self, key: str) -> str | None:
         row = self.conn.execute(

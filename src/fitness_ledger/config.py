@@ -51,6 +51,9 @@ class Config:
     count_warmup_sets: bool = False
     local_utc_offset_minutes: int = 120
     week_starts_on: int = 0  # 0 = Monday
+    # Default double-progression rep range; per-exercise overrides live in the DB.
+    rep_range_low: int = 6
+    rep_range_high: int = 10
 
     # --- model layer (v0.1 Q&A; optional until a key exists) ---
     anthropic_api_key: str | None = None
@@ -72,6 +75,8 @@ class Config:
             count_warmup_sets=_bool(os.environ.get("COUNT_WARMUP_SETS", "false")),
             local_utc_offset_minutes=int(os.environ.get("LOCAL_UTC_OFFSET_MINUTES", "120")),
             week_starts_on=int(os.environ.get("WEEK_STARTS_ON", "0")),
+            rep_range_low=int(os.environ.get("REP_RANGE_LOW", "6")),
+            rep_range_high=int(os.environ.get("REP_RANGE_HIGH", "10")),
             anthropic_api_key=os.environ.get("ANTHROPIC_API_KEY"),
             anthropic_model=os.environ.get("ANTHROPIC_MODEL", "claude-opus-5"),
         )

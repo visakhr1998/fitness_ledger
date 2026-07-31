@@ -113,6 +113,32 @@ class MuscleVolume:
         return len(self.days)
 
 
+@dataclass(frozen=True)
+class Insight:
+    """Something the analysis pass noticed, for the user to interpret.
+
+    Insights are surfaced, never acted on: nothing downstream changes training
+    because one of these fired.
+    """
+
+    rule: str
+    severity: str  # "warn" | "info"
+    subject: str  # muscle group or exercise this is about
+    message: str
+    detected_at: date
+    data: dict = field(default_factory=dict)
+
+    def as_dict(self) -> dict:
+        return {
+            "rule": self.rule,
+            "severity": self.severity,
+            "subject": self.subject,
+            "message": self.message,
+            "detected_at": self.detected_at.isoformat(),
+            "data": self.data,
+        }
+
+
 @dataclass
 class VolumeRollup:
     """Effective sets per muscle group across a closed-open date window."""

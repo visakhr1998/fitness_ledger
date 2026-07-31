@@ -1,14 +1,19 @@
-# Fitness ledger — v0.1
+# Fitness ledger — v0.2
 
 Tracks **effective sets per muscle group against weekly targets**, over Hevy
 (lifts) and Google Health (runs, sleep, resting heart rate).
 
-v0.1 is the deterministic core: sync, the volume calculation, and a CLI to query
-it. No planning, no write-back, no web app, no ADK — those arrive at v0.2–v0.4.
+- **v0.1** — the deterministic core: sync, the volume calculation, a CLI.
+  *Done when "how much chest volume did I do last week" returns a right answer.*
+- **v0.2** — the ledger you can look at: FastAPI backend, web dashboard, double
+  progression state, and the insight rules.
+  *Done when opening the app tells you what you're neglecting without asking.*
 
-> **Done when:** "how much chest volume did I do last week" returns a right answer.
-> It does, and the number is verified by hand against a known session (see
-> [Verification](#verification)).
+Still no planning, no write-back, no ADK — those are v0.3 and v0.4.
+
+```bash
+python -m fitness_ledger.cli serve      # dashboard on http://127.0.0.1:8000
+```
 
 ## The volume model
 
@@ -76,21 +81,95 @@ paths and tunables only.
 | `health [--window]` | Sleep, resting HR, steps per day |
 | `targets [--set chest=16]` | Show or adjust weekly targets |
 | `exercises <query>` | Search the exercise catalog |
+| `insights` | Run the detection rules |
+| `progression` | Double-progression state per main lift |
+| `serve [--port]` | Run the dashboard |
 | `ask "<question>"` | Natural-language Q&A (needs `ANTHROPIC_API_KEY`) |
 
 Windows accept `this-week`, `last-week`, `last-4-weeks`, `last-30-days`,
 `2026-07`, or `2026-07-01:2026-07-31`. `last-N-weeks` means N **complete** weeks,
 excluding the part-finished current one, so trailing averages aren't diluted.
 
+## Insight rules
+
+Run on demand (`insights`, `/api/insights`, or the dashboard); scheduled runs and
+persistence arrive at v0.4. All are **surfaced, never acted on**.
+
+| Rule | Fires when |
+|---|---|
+| `volume_drop` | A muscle group is >25% below its trailing 4-week average |
+| `coverage_gap` | Below the frequency target two weeks running |
+| `stall` | No load *or* rep increase on a main lift across 3 sessions |
+| `progression_ready` | Every working set at the top of the rep range |
+| `recovery_flag` | 3-night sleep mean below personal baseline |
+
+`drift` from the plan is **deliberately not implemented**: it compares logged
+sessions against *planned* ones, and Plan/Availability don't exist until v0.3.
+Approximating it from habitual training days would invent a signal rather than
+measure one.
+
+Two design points worth keeping:
+
+- **Coverage gaps are graded.** A muscle that was being trained and stopped is a
+  warning; one that never appears at all is info. Otherwise the panel fills with
+  identical shouts about abductors every week and stops being read.
+- **The recovery rule never prescribes.** It reports the correlation from the
+  user's own history — "on your 9 previous training days after a short night you
+  averaged 14 working sets, against 15 otherwise" — and stops there. A test
+  asserts the output contains no directive language.
+
+## Double progression
+
+State per exercise: the working weight, reps achieved at it, and whether every
+set reached the top of the rep range. Load steps come from the equipment
+(barbell 2.5 kg, dumbbell 2 kg, machine 5 kg).
+
+**Rep ranges are configuration, not inference.** A logged set records what was
+done, never what was intended, so a heavy top set followed by a back-off is
+indistinguishable from a failed range attempt. The default is `REP_RANGE_LOW`–
+`REP_RANGE_HIGH` (6–10), overridable per exercise via `PUT /api/rep-ranges`.
+Only sets at the session's **top weight** count toward the decision, so back-off
+sets never block progression.
+
+## Dashboard
+
+Single self-contained HTML page served by FastAPI — no build step, no npm, which
+for one user beats a React toolchain. Charts are hand-built SVG.
+
+- Estimated 1RM per lift over time (primary), volume vs target per muscle group,
+  weekly volume, insight cards, progression, runs and recovery tables.
+- Categorical palette **validated** with the dataviz validator in both modes, not
+  eyeballed. Light mode has three slots under 3:1 contrast, so direct endpoint
+  labels and a table view are mandatory — every chart has a table twin.
+- One filter row scoping everything below it; never per-chart filters.
+- Light and dark are both selected palettes; the toggle beats the OS setting in
+  both directions.
+
+## API
+
+| Endpoint | |
+|---|---|
+| `GET /api/dashboard` | Everything the front page needs, one round trip |
+| `GET /api/volume?window=` · `/api/muscle/{group}` | Volume views |
+| `GET /api/trend` · `/api/strength` · `/api/progression` | Series and state |
+| `GET /api/insights` | Detection rules |
+| `GET /api/runs` · `/api/health-metrics` | Google Health views |
+| `GET/PUT /api/targets` · `PUT /api/rep-ranges` | Configuration |
+| `POST /api/sync` | Explicitly triggered refresh |
+
+Endpoints are thin wrappers over `queries.py`, so the API and the CLI can never
+disagree about a number.
+
 ## Architecture
 
 ```
-CLI  ──►  queries.py  ──►  volume.py   (rules engine: pure, tested, no I/O)
-             │                  ▲
-             ▼                  │
+CLI ─┐
+     ├─► queries.py ──► volume.py · progression.py · insights.py
+API ─┘        │              (rules engine: pure, tested, no I/O)
+              ▼
           db.py (Repository interface ─► SQLite)
-             ▲
-             │
+              ▲
+              │
           sync.py  ──►  mcp_client.py  ──►  Hevy MCP · Google Health MCP
 
           chat.py  ──►  queries.py as tools (model explains, never computes)
@@ -152,6 +231,7 @@ Run the suite with `./.venv/Scripts/python.exe -m pytest`.
 
 ## Next
 
-v0.2 — FastAPI + web dashboard, double-progression state per exercise, insight
-rules surfaced in the UI. The rules engine and query layer are already the shape
-the API needs.
+v0.3 — the redistribution algorithm against the priority ranking, availability
+declaration, plan generation with rationale, append-only plan history, approval
+flow and Hevy write-back, and ADK orchestration. The `drift` insight rule lands
+with it, since that is when planned sessions start to exist.

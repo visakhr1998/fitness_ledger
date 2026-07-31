@@ -1,0 +1,807 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fitness ledger</title>
+<style>
+  /* Palette roles. Dark values are declared under both scopes: the media query
+     covers the OS setting, the data-theme scope covers the toggle, which must
+     win in both directions. */
+  :root {
+    color-scheme: light;
+    --surface-1: #fcfcfb;
+    --page: #f9f9f7;
+    --text-primary: #0b0b0b;
+    --text-secondary: #52514e;
+    --muted: #898781;
+    --grid: #e1e0d9;
+    --axis: #c3c2b7;
+    --border: rgba(11, 11, 11, 0.10);
+    --series-1: #2a78d6;
+    --series-2: #eb6834;
+    --series-3: #1baf7a;
+    --series-4: #eda100;
+    --status-good: #0ca30c;
+    --status-warning: #fab219;
+    --status-serious: #ec835a;
+    --status-critical: #d03b3b;
+    --success-text: #006300;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:where(:not([data-theme="light"])) {
+      color-scheme: dark;
+      --surface-1: #1a1a19;
+      --page: #0d0d0d;
+      --text-primary: #ffffff;
+      --text-secondary: #c3c2b7;
+      --muted: #898781;
+      --grid: #2c2c2a;
+      --axis: #383835;
+      --border: rgba(255, 255, 255, 0.10);
+      --series-1: #3987e5;
+      --series-2: #d95926;
+      --series-3: #199e70;
+      --series-4: #c98500;
+      --success-text: #0ca30c;
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --surface-1: #1a1a19;
+    --page: #0d0d0d;
+    --text-primary: #ffffff;
+    --text-secondary: #c3c2b7;
+    --muted: #898781;
+    --grid: #2c2c2a;
+    --axis: #383835;
+    --border: rgba(255, 255, 255, 0.10);
+    --series-1: #3987e5;
+    --series-2: #d95926;
+    --series-3: #199e70;
+    --series-4: #c98500;
+    --success-text: #0ca30c;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--page);
+    color: var(--text-primary);
+    font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  .wrap { max-width: 1120px; margin: 0 auto; padding: 24px 20px 64px; }
+
+  header.top { display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap; margin-bottom: 4px; }
+  header.top h1 { font-size: 20px; font-weight: 600; margin: 0; letter-spacing: -0.01em; }
+  header.top .sub { color: var(--muted); font-size: 13px; }
+  header.top .spacer { flex: 1 1 auto; }
+
+  button {
+    font: inherit; color: var(--text-primary); background: var(--surface-1);
+    border: 1px solid var(--border); border-radius: 8px; padding: 6px 12px; cursor: pointer;
+  }
+  button:hover { background: var(--page); }
+  button[aria-pressed="true"] { border-color: var(--text-secondary); font-weight: 600; }
+
+  /* One filter row above everything it scopes -- never per-chart filters. */
+  .filters {
+    display: flex; gap: 20px; flex-wrap: wrap; align-items: center;
+    margin: 18px 0 22px; padding: 12px 14px;
+    background: var(--surface-1); border: 1px solid var(--border); border-radius: 10px;
+  }
+  .filters .group { display: flex; align-items: center; gap: 8px; }
+  .filters .label { color: var(--text-secondary); font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; }
+  .seg { display: flex; gap: 4px; }
+  .seg button { padding: 4px 10px; font-size: 13px; }
+
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; margin-bottom: 22px; }
+  .tile { background: var(--surface-1); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; }
+  .tile .k { color: var(--text-secondary); font-size: 12px; margin-bottom: 6px; }
+  /* Proportional figures on standalone numbers -- tabular-nums only in tables. */
+  .tile .v { font-size: 28px; font-weight: 600; line-height: 1.1; letter-spacing: -0.02em; }
+  .tile .n { color: var(--muted); font-size: 12px; margin-top: 4px; }
+
+  .card { background: var(--surface-1); border: 1px solid var(--border); border-radius: 10px; padding: 16px 18px 18px; margin-bottom: 20px; }
+  .card h2 { font-size: 15px; font-weight: 600; margin: 0 0 2px; }
+  .card .desc { color: var(--muted); font-size: 12px; margin-bottom: 14px; }
+  .card .head { display: flex; align-items: flex-start; gap: 12px; }
+  .card .head .spacer { flex: 1 1 auto; }
+  .card .toggle { font-size: 12px; padding: 4px 10px; }
+
+  .legend { display: flex; gap: 16px; flex-wrap: wrap; margin: 0 0 10px; }
+  .legend .item { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-secondary); }
+  .legend .swatch { width: 10px; height: 10px; border-radius: 2px; flex: none; }
+  .legend .swatch.line { height: 2px; width: 14px; border-radius: 1px; }
+  .legend .swatch.tick { height: 12px; width: 2px; border-radius: 0; background: var(--text-secondary); }
+
+  .plot { position: relative; width: 100%; }
+  .plot svg { display: block; width: 100%; height: auto; }
+  .refetching { opacity: 0.5; transition: opacity 120ms; }
+
+  .tip {
+    position: fixed; pointer-events: none; z-index: 20; opacity: 0; transition: opacity 90ms;
+    background: var(--surface-1); color: var(--text-primary);
+    border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px;
+    font-size: 12px; box-shadow: 0 6px 20px rgba(0,0,0,0.16); max-width: 260px;
+  }
+  .tip .t { font-weight: 600; margin-bottom: 3px; }
+  .tip .r { color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  th, td { text-align: left; padding: 6px 10px 6px 0; border-bottom: 1px solid var(--grid); }
+  th { color: var(--text-secondary); font-weight: 600; font-size: 12px; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .tableview[hidden] { display: none; }
+  .tableview { margin-top: 14px; max-height: 340px; overflow: auto; }
+
+  .insights { display: grid; gap: 10px; }
+  .insight {
+    display: flex; gap: 12px; align-items: flex-start;
+    background: var(--surface-1); border: 1px solid var(--border);
+    border-left: 3px solid var(--muted); border-radius: 8px; padding: 11px 14px;
+  }
+  .insight.warn { border-left-color: var(--status-serious); }
+  .insight.info { border-left-color: var(--muted); }
+  /* Status never rides on color alone: every card carries an icon and a word. */
+  .insight .icon { font-size: 14px; line-height: 1.4; flex: none; }
+  .insight .body { flex: 1 1 auto; }
+  .insight .tag { font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-secondary); font-weight: 600; }
+  .insight .msg { margin-top: 2px; }
+  .insight .rule { color: var(--muted); font-size: 11px; margin-top: 3px; }
+
+  .empty { color: var(--muted); font-size: 13px; padding: 8px 0; }
+  .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 20px; }
+  .scroll-x { overflow-x: auto; }
+  .up { color: var(--success-text); }
+  .down { color: var(--status-critical); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <h1>Fitness ledger</h1>
+    <span class="sub" id="subtitle">loading…</span>
+    <span class="spacer"></span>
+    <button id="syncBtn" title="Pull fresh data from Hevy and Google Health">Sync</button>
+    <button id="themeBtn" aria-label="Toggle colour theme">Theme</button>
+  </header>
+
+  <div class="filters">
+    <div class="group">
+      <span class="label">Week</span>
+      <div class="seg" id="weekSeg">
+        <button data-window="this-week" aria-pressed="true">This week</button>
+        <button data-window="last-week" aria-pressed="false">Last week</button>
+      </div>
+    </div>
+    <div class="group">
+      <span class="label">History</span>
+      <div class="seg" id="weeksSeg">
+        <button data-weeks="8" aria-pressed="true">8 wk</button>
+        <button data-weeks="16" aria-pressed="false">16 wk</button>
+        <button data-weeks="26" aria-pressed="false">26 wk</button>
+      </div>
+    </div>
+    <span class="spacer"></span>
+    <span class="sub" id="syncNote" style="color:var(--muted);font-size:12px"></span>
+  </div>
+
+  <div class="tiles" id="tiles"></div>
+
+  <section class="card">
+    <div class="head">
+      <div><h2>What needs attention</h2><div class="desc">Detection rules over the cached history. Surfaced only — nothing acts on these.</div></div>
+    </div>
+    <div class="insights" id="insights"></div>
+  </section>
+
+  <section class="card">
+    <div class="head">
+      <div><h2>Strength progress</h2><div class="desc" id="strengthDesc">Estimated 1RM per session, top working set (Epley).</div></div>
+      <span class="spacer"></span>
+      <button class="toggle" data-table="strengthTable" aria-pressed="false">Table</button>
+    </div>
+    <div class="legend" id="strengthLegend"></div>
+    <div class="plot" id="strengthPlot"></div>
+    <div class="tableview" id="strengthTable" hidden></div>
+  </section>
+
+  <section class="card">
+    <div class="head">
+      <div><h2>Volume vs target</h2><div class="desc" id="volumeDesc">Effective sets per muscle group.</div></div>
+      <span class="spacer"></span>
+      <button class="toggle" data-table="volumeTable" aria-pressed="false">Table</button>
+    </div>
+    <div class="legend">
+      <span class="item"><span class="swatch" style="background:var(--series-1)"></span>Effective sets</span>
+      <span class="item"><span class="swatch tick"></span>Weekly target</span>
+    </div>
+    <div class="plot" id="volumePlot"></div>
+    <div class="tableview" id="volumeTable" hidden></div>
+  </section>
+
+  <section class="card">
+    <div class="head">
+      <div><h2>Weekly volume</h2><div class="desc">Total effective sets per week, all muscle groups.</div></div>
+      <span class="spacer"></span>
+      <button class="toggle" data-table="trendTable" aria-pressed="false">Table</button>
+    </div>
+    <div class="plot" id="trendPlot"></div>
+    <div class="tableview" id="trendTable" hidden></div>
+  </section>
+
+  <section class="card">
+    <div class="head">
+      <div><h2>Double progression</h2><div class="desc">Working weight against the rep range. Rep ranges are configuration, not inferred from history.</div></div>
+    </div>
+    <div class="scroll-x" id="progression"></div>
+  </section>
+
+  <div class="grid2">
+    <section class="card">
+      <div class="head"><div><h2>Runs</h2><div class="desc">Last 4 complete weeks.</div></div></div>
+      <div class="scroll-x" id="runs"></div>
+    </section>
+    <section class="card">
+      <div class="head"><div><h2>Recovery</h2><div class="desc">Sleep, resting heart rate and steps.</div></div></div>
+      <div class="scroll-x" id="healthTable"></div>
+    </section>
+  </div>
+</div>
+
+<div class="tip" id="tip" role="status" aria-live="polite"></div>
+
+<script>
+"use strict";
+
+const SVG = "http://www.w3.org/2000/svg";
+const state = { window: "this-week", weeks: 8, data: null };
+const tip = document.getElementById("tip");
+
+// --- small helpers ---------------------------------------------------------
+
+// Children may be nodes, strings or numbers; anything that is not already a
+// node becomes text, so a stray number cannot blow up a whole render.
+function append(node, children) {
+  for (const c of [].concat(children)) {
+    if (c === null || c === undefined || c === false) continue;
+    node.appendChild(c instanceof Node ? c : document.createTextNode(String(c)));
+  }
+}
+function el(tag, attrs = {}, children = []) {
+  const node = document.createElementNS(SVG, tag);
+  for (const [k, v] of Object.entries(attrs)) if (v !== null && v !== undefined) node.setAttribute(k, v);
+  append(node, children);
+  return node;
+}
+function h(tag, attrs = {}, children = []) {
+  const node = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k === "class") node.className = v;
+    else if (k === "html") node.innerHTML = v;
+    else if (v !== null && v !== undefined) node.setAttribute(k, v);
+  }
+  append(node, children);
+  return node;
+}
+const fmt = (n, d = 1) => (n === null || n === undefined ? "–" : Number(n).toFixed(d));
+const nice = (s) => s.replace(/_/g, " ");
+const shortDate = (iso) => new Date(iso + "T00:00:00").toLocaleDateString(undefined, { month: "short", day: "numeric" });
+
+function showTip(evt, title, rows) {
+  tip.innerHTML = "";
+  tip.appendChild(h("div", { class: "t" }, title));
+  for (const r of rows) tip.appendChild(h("div", { class: "r" }, r));
+  tip.style.opacity = "1";
+  const pad = 14;
+  const rect = tip.getBoundingClientRect();
+  let x = evt.clientX + pad, y = evt.clientY + pad;
+  if (x + rect.width > window.innerWidth - 8) x = evt.clientX - rect.width - pad;
+  if (y + rect.height > window.innerHeight - 8) y = evt.clientY - rect.height - pad;
+  tip.style.left = x + "px";
+  tip.style.top = y + "px";
+}
+const hideTip = () => { tip.style.opacity = "0"; };
+
+// A rounded data-end anchored to the baseline: only the far end is rounded, so
+// the bar still reads as growing from zero.
+function barPath(x, y, w, hgt, r, dir) {
+  const rr = Math.max(0, Math.min(r, dir === "right" ? w : hgt, dir === "right" ? hgt / 2 : w / 2));
+  if (dir === "right") {
+    return `M${x},${y} H${x + w - rr} A${rr},${rr} 0 0 1 ${x + w},${y + rr} V${y + hgt - rr} A${rr},${rr} 0 0 1 ${x + w - rr},${y + hgt} H${x} Z`;
+  }
+  return `M${x},${y + hgt} V${y + rr} A${rr},${rr} 0 0 1 ${x + rr},${y} H${x + w - rr} A${rr},${rr} 0 0 1 ${x + w},${y + rr} V${y + hgt} Z`;
+}
+
+function ticks(max, count = 5) {
+  if (max <= 0) return [0];
+  const raw = max / count;
+  const mag = Math.pow(10, Math.floor(Math.log10(raw)));
+  const step = [1, 2, 2.5, 5, 10].map((m) => m * mag).find((s) => s >= raw) || mag * 10;
+  const out = [];
+  for (let v = 0; v <= max + step * 0.001; v += step) out.push(Math.round(v * 100) / 100);
+  return out;
+}
+
+// --- line chart: estimated 1RM over time -----------------------------------
+
+function drawStrength(container, legendBox, tableBox, payload) {
+  container.innerHTML = "";
+  legendBox.innerHTML = "";
+  const all = payload.series || [];
+  if (!all.length) {
+    container.appendChild(h("div", { class: "empty" }, "Not enough sessions yet to plot progress."));
+    tableBox.innerHTML = "";
+    return;
+  }
+  // Cap the plot at four series: past that, direct labels collide and the
+  // categorical order stops being safely distinguishable. The rest stay in the
+  // table twin below.
+  const series = all.slice(0, 4);
+
+  const W = Math.max(container.clientWidth || 720, 320);
+  const H = 320, M = { t: 16, r: 74, b: 34, l: 44 };
+  const iw = W - M.l - M.r, ih = H - M.t - M.b;
+
+  const points = series.flatMap((s) => s.points);
+  const xs = points.map((p) => new Date(p.date + "T00:00:00").getTime());
+  const ys = points.map((p) => p.estimated_1rm_kg);
+  const x0 = Math.min(...xs), x1 = Math.max(...xs);
+  const yMax = Math.max(...ys) * 1.08, yMin = Math.min(...ys) * 0.92;
+  const sx = (t) => M.l + (x1 === x0 ? iw / 2 : ((t - x0) / (x1 - x0)) * iw);
+  const sy = (v) => M.t + ih - ((v - yMin) / (yMax - yMin || 1)) * ih;
+
+  const svg = el("svg", { viewBox: `0 0 ${W} ${H}`, width: W, height: H, role: "img",
+    "aria-label": "Estimated one-rep max over time per lift" });
+
+  for (const v of ticks(yMax - yMin, 4).map((d) => yMin + d)) {
+    if (v > yMax) continue;
+    svg.appendChild(el("line", { x1: M.l, x2: M.l + iw, y1: sy(v), y2: sy(v), stroke: "var(--grid)", "stroke-width": 1 }));
+    svg.appendChild(el("text", { x: M.l - 8, y: sy(v) + 4, "text-anchor": "end", fill: "var(--muted)",
+      "font-size": 11, style: "font-variant-numeric: tabular-nums" }, String(Math.round(v))));
+  }
+  svg.appendChild(el("line", { x1: M.l, x2: M.l + iw, y1: M.t + ih, y2: M.t + ih, stroke: "var(--axis)", "stroke-width": 1 }));
+
+  const span = x1 - x0, tickCount = 5;
+  for (let i = 0; i <= tickCount; i++) {
+    const t = x0 + (span * i) / tickCount;
+    svg.appendChild(el("text", { x: sx(t), y: H - 12, "text-anchor": "middle", fill: "var(--muted)", "font-size": 11 },
+      new Date(t).toLocaleDateString(undefined, { month: "short", day: "numeric" })));
+  }
+
+  const hits = [];
+  series.forEach((s, i) => {
+    const color = `var(--series-${i + 1})`;
+    const pts = s.points.map((p) => ({ ...p, cx: sx(new Date(p.date + "T00:00:00").getTime()), cy: sy(p.estimated_1rm_kg), name: s.exercise, color }));
+    svg.appendChild(el("path", {
+      d: pts.map((p, j) => `${j ? "L" : "M"}${p.cx},${p.cy}`).join(" "),
+      fill: "none", stroke: color, "stroke-width": 2, "stroke-linejoin": "round", "stroke-linecap": "round",
+    }));
+    for (const p of pts) {
+      // 2px surface ring keeps overlapping markers separable without a border.
+      svg.appendChild(el("circle", { cx: p.cx, cy: p.cy, r: 4, fill: color, stroke: "var(--surface-1)", "stroke-width": 2 }));
+      hits.push(p);
+    }
+    // Selective direct labels: the endpoint only, never a number on every point.
+    const last = pts[pts.length - 1];
+    svg.appendChild(el("text", { x: last.cx + 9, y: last.cy + 4, fill: "var(--text-secondary)", "font-size": 11 },
+      `${Math.round(last.estimated_1rm_kg)} kg`));
+
+    legendBox.appendChild(h("span", { class: "item" }, [
+      h("span", { class: "swatch line", style: `background:${color}` }), `${s.exercise}`,
+    ]));
+  });
+  if (all.length > series.length) {
+    legendBox.appendChild(h("span", { class: "item", style: "color:var(--muted)" },
+      `+${all.length - series.length} more in table`));
+  }
+
+  const overlay = el("rect", { x: M.l, y: M.t, width: iw, height: ih, fill: "transparent", style: "cursor:crosshair" });
+  const cross = el("line", { x1: 0, x2: 0, y1: M.t, y2: M.t + ih, stroke: "var(--axis)", "stroke-width": 1, opacity: 0 });
+  const focus = el("circle", { r: 6, fill: "none", stroke: "var(--text-primary)", "stroke-width": 2, opacity: 0 });
+  svg.appendChild(cross); svg.appendChild(overlay); svg.appendChild(focus);
+
+  overlay.addEventListener("mousemove", (evt) => {
+    const box = svg.getBoundingClientRect();
+    const scale = W / box.width;
+    const mx = (evt.clientX - box.left) * scale, my = (evt.clientY - box.top) * scale;
+    let best = null, bestD = Infinity;
+    for (const p of hits) {
+      const d = (p.cx - mx) ** 2 + (p.cy - my) ** 2;
+      if (d < bestD) { bestD = d; best = p; }
+    }
+    if (!best) return;
+    cross.setAttribute("x1", best.cx); cross.setAttribute("x2", best.cx); cross.setAttribute("opacity", 1);
+    focus.setAttribute("cx", best.cx); focus.setAttribute("cy", best.cy); focus.setAttribute("opacity", 1);
+    showTip(evt, best.name, [
+      shortDate(best.date),
+      `${fmt(best.weight_kg)} kg × ${best.reps}`,
+      `est. 1RM ${fmt(best.estimated_1rm_kg)} kg`,
+    ]);
+  });
+  overlay.addEventListener("mouseleave", () => { hideTip(); cross.setAttribute("opacity", 0); focus.setAttribute("opacity", 0); });
+
+  container.appendChild(svg);
+
+  const table = h("table");
+  table.appendChild(h("thead", {}, h("tr", {}, [
+    h("th", {}, "Exercise"), h("th", { class: "num" }, "Sessions"),
+    h("th", { class: "num" }, "Latest e1RM"), h("th", { class: "num" }, "Change"), h("th", {}, "Last session"),
+  ])));
+  const tbody = h("tbody");
+  for (const s of all) {
+    const last = s.points[s.points.length - 1];
+    tbody.appendChild(h("tr", {}, [
+      h("td", {}, s.exercise),
+      h("td", { class: "num" }, String(s.points.length)),
+      h("td", { class: "num" }, fmt(s.latest_e1rm_kg) + " kg"),
+      h("td", { class: "num " + (s.change_kg > 0 ? "up" : s.change_kg < 0 ? "down" : "") },
+        (s.change_kg > 0 ? "+" : "") + fmt(s.change_kg) + " kg"),
+      h("td", {}, `${shortDate(last.date)} · ${fmt(last.weight_kg)} kg × ${last.reps}`),
+    ]));
+  }
+  table.appendChild(tbody);
+  tableBox.innerHTML = "";
+  tableBox.appendChild(table);
+}
+
+// --- horizontal bars: volume vs target -------------------------------------
+
+function drawVolume(container, tableBox, report) {
+  container.innerHTML = "";
+  const rows = (report.coverage || []).slice().sort((a, b) => b.effective_sets - a.effective_sets);
+  if (!rows.length) { container.appendChild(h("div", { class: "empty" }, "No volume in this window.")); return; }
+
+  const W = Math.max(container.clientWidth || 720, 320);
+  const band = 24, M = { t: 8, r: 46, b: 30, l: 108 };
+  const ih = rows.length * band, H = M.t + ih + M.b, iw = W - M.l - M.r;
+  const max = Math.max(...rows.map((r) => Math.max(r.effective_sets, r.target_sets))) * 1.05 || 1;
+  const sx = (v) => (v / max) * iw;
+
+  const svg = el("svg", { viewBox: `0 0 ${W} ${H}`, width: W, height: H, role: "img",
+    "aria-label": "Effective sets per muscle group against weekly target" });
+
+  for (const t of ticks(max, 5)) {
+    svg.appendChild(el("line", { x1: M.l + sx(t), x2: M.l + sx(t), y1: M.t, y2: M.t + ih, stroke: "var(--grid)", "stroke-width": 1 }));
+    svg.appendChild(el("text", { x: M.l + sx(t), y: H - 12, "text-anchor": "middle", fill: "var(--muted)",
+      "font-size": 11, style: "font-variant-numeric: tabular-nums" }, String(t)));
+  }
+  svg.appendChild(el("line", { x1: M.l, x2: M.l, y1: M.t, y2: M.t + ih, stroke: "var(--axis)", "stroke-width": 1 }));
+
+  rows.forEach((r, i) => {
+    // 2px gap between adjacent bars, from the band rather than a drawn border.
+    const y = M.t + i * band + 1, hgt = band - 2;
+    const w = Math.max(sx(r.effective_sets), r.effective_sets > 0 ? 2 : 0);
+
+    svg.appendChild(el("text", { x: M.l - 10, y: y + hgt / 2 + 4, "text-anchor": "end",
+      fill: "var(--text-secondary)", "font-size": 12 }, nice(r.muscle_group)));
+
+    if (w > 0) {
+      // One series, one colour: a value-ramp here would re-encode bar length as hue.
+      svg.appendChild(el("path", { d: barPath(M.l, y, w, hgt, 4, "right"), fill: "var(--series-1)" }));
+    }
+    // Target is a threshold, not a series -- it wears chrome ink, not a slot colour.
+    const tx = M.l + sx(r.target_sets);
+    svg.appendChild(el("line", { x1: tx, x2: tx, y1: y - 1, y2: y + hgt + 1, stroke: "var(--text-secondary)", "stroke-width": 2 }));
+
+    svg.appendChild(el("text", { x: M.l + Math.max(w, 0) + 8, y: y + hgt / 2 + 4, fill: "var(--muted)",
+      "font-size": 11, style: "font-variant-numeric: tabular-nums" }, fmt(r.effective_sets)));
+
+    const hit = el("rect", { x: M.l, y, width: iw, height: hgt, fill: "transparent" });
+    hit.addEventListener("mousemove", (evt) => showTip(evt, nice(r.muscle_group), [
+      `${fmt(r.effective_sets)} of ${fmt(r.target_sets, 0)} sets (${r.pct_of_target}%)`,
+      `frequency ${r.frequency}/${r.target_frequency} days`,
+      `tonnage ${fmt(r.tonnage_kg, 0)} kg`,
+    ]));
+    hit.addEventListener("mouseleave", hideTip);
+    svg.appendChild(hit);
+  });
+
+  container.appendChild(svg);
+
+  const table = h("table");
+  table.appendChild(h("thead", {}, h("tr", {}, [
+    h("th", {}, "Muscle group"), h("th", { class: "num" }, "Sets"), h("th", { class: "num" }, "Target"),
+    h("th", { class: "num" }, "% target"), h("th", { class: "num" }, "Frequency"), h("th", { class: "num" }, "Tonnage"),
+  ])));
+  const tbody = h("tbody");
+  for (const r of rows) {
+    tbody.appendChild(h("tr", {}, [
+      h("td", {}, nice(r.muscle_group)),
+      h("td", { class: "num" }, fmt(r.effective_sets)),
+      h("td", { class: "num" }, fmt(r.target_sets, 0)),
+      h("td", { class: "num" }, r.pct_of_target + "%"),
+      h("td", { class: "num" }, `${r.frequency}/${r.target_frequency}`),
+      h("td", { class: "num" }, fmt(r.tonnage_kg, 0) + " kg"),
+    ]));
+  }
+  table.appendChild(tbody);
+  tableBox.innerHTML = "";
+  tableBox.appendChild(table);
+}
+
+// --- columns: weekly volume ------------------------------------------------
+
+function drawTrend(container, tableBox, trend) {
+  container.innerHTML = "";
+  const rows = trend.weeks || [];
+  if (!rows.length) { container.appendChild(h("div", { class: "empty" }, "No history yet.")); return; }
+
+  const W = Math.max(container.clientWidth || 720, 320);
+  const H = 220, M = { t: 14, r: 12, b: 34, l: 44 };
+  const iw = W - M.l - M.r, ih = H - M.t - M.b;
+  const max = Math.max(...rows.map((r) => r.effective_sets)) * 1.1 || 1;
+  const band = iw / rows.length;
+  const sy = (v) => M.t + ih - (v / max) * ih;
+
+  const svg = el("svg", { viewBox: `0 0 ${W} ${H}`, width: W, height: H, role: "img",
+    "aria-label": "Total effective sets per week" });
+
+  for (const t of ticks(max, 4)) {
+    svg.appendChild(el("line", { x1: M.l, x2: M.l + iw, y1: sy(t), y2: sy(t), stroke: "var(--grid)", "stroke-width": 1 }));
+    svg.appendChild(el("text", { x: M.l - 8, y: sy(t) + 4, "text-anchor": "end", fill: "var(--muted)",
+      "font-size": 11, style: "font-variant-numeric: tabular-nums" }, String(t)));
+  }
+  svg.appendChild(el("line", { x1: M.l, x2: M.l + iw, y1: M.t + ih, y2: M.t + ih, stroke: "var(--axis)", "stroke-width": 1 }));
+
+  rows.forEach((r, i) => {
+    const w = Math.max(band - 8, 4);
+    const x = M.l + i * band + (band - w) / 2;
+    const y = sy(r.effective_sets), hgt = M.t + ih - y;
+    if (hgt > 0) svg.appendChild(el("path", { d: barPath(x, y, w, hgt, 4, "up"), fill: "var(--series-1)" }));
+    svg.appendChild(el("text", { x: x + w / 2, y: H - 12, "text-anchor": "middle", fill: "var(--muted)", "font-size": 11 },
+      shortDate(r.week_starting)));
+
+    const hit = el("rect", { x, y: M.t, width: w, height: ih, fill: "transparent" });
+    hit.addEventListener("mousemove", (evt) => showTip(evt, "Week of " + shortDate(r.week_starting), [
+      `${fmt(r.effective_sets)} effective sets`,
+      `${r.working_sets} working sets · ${r.workouts} workouts`,
+    ]));
+    hit.addEventListener("mouseleave", hideTip);
+    svg.appendChild(hit);
+  });
+
+  container.appendChild(svg);
+
+  const table = h("table");
+  table.appendChild(h("thead", {}, h("tr", {}, [
+    h("th", {}, "Week starting"), h("th", { class: "num" }, "Effective sets"),
+    h("th", { class: "num" }, "Working sets"), h("th", { class: "num" }, "Workouts"),
+  ])));
+  const tbody = h("tbody");
+  for (const r of rows) {
+    tbody.appendChild(h("tr", {}, [
+      h("td", {}, r.week_starting),
+      h("td", { class: "num" }, fmt(r.effective_sets)),
+      h("td", { class: "num" }, String(r.working_sets ?? "–")),
+      h("td", { class: "num" }, String(r.workouts ?? "–")),
+    ]));
+  }
+  table.appendChild(tbody);
+  tableBox.innerHTML = "";
+  tableBox.appendChild(table);
+}
+
+// --- plain sections --------------------------------------------------------
+
+function drawTiles(data) {
+  const box = document.getElementById("tiles");
+  const vol = data.volume, cov = vol.coverage || [];
+  const onTarget = cov.filter((r) => r.pct_of_target >= 100).length;
+  const strength = data.strength.series || [];
+  const best = strength.slice().sort((a, b) => b.change_kg - a.change_kg)[0];
+  const tiles = [
+    { k: "Working sets, this week", v: String(vol.working_sets), n: `${vol.workouts} workouts` },
+    { k: "Muscle groups on target", v: `${onTarget}/${cov.length}`, n: vol.window },
+    { k: "Running, last 4 weeks", v: `${fmt(data.runs.total_km, 1)} km`, n: `${data.runs.count} runs` },
+    best
+      ? { k: "Biggest e1RM gain", v: `${best.change_kg > 0 ? "+" : ""}${fmt(best.change_kg)} kg`, n: best.exercise }
+      : { k: "Biggest e1RM gain", v: "–", n: "not enough sessions" },
+  ];
+  box.innerHTML = "";
+  for (const t of tiles) {
+    box.appendChild(h("div", { class: "tile" }, [
+      h("div", { class: "k" }, t.k), h("div", { class: "v" }, t.v), h("div", { class: "n" }, t.n),
+    ]));
+  }
+}
+
+function drawInsights(list) {
+  const box = document.getElementById("insights");
+  box.innerHTML = "";
+  if (!list.length) { box.appendChild(h("div", { class: "empty" }, "Nothing flagged. Volume and frequency are tracking.")); return; }
+  for (const i of list) {
+    const warn = i.severity === "warn";
+    box.appendChild(h("div", { class: "insight " + i.severity }, [
+      h("span", { class: "icon" }, warn ? "▲" : "•"),
+      h("div", { class: "body" }, [
+        h("div", { class: "tag" }, warn ? "Attention" : "Info"),
+        h("div", { class: "msg" }, i.message),
+        h("div", { class: "rule" }, i.rule.replace(/_/g, " ")),
+      ]),
+    ]));
+  }
+}
+
+function drawProgression(rows) {
+  const box = document.getElementById("progression");
+  box.innerHTML = "";
+  if (!rows.length) { box.appendChild(h("div", { class: "empty" }, "No regularly trained lifts yet.")); return; }
+  const table = h("table");
+  table.appendChild(h("thead", {}, h("tr", {}, [
+    h("th", {}, "Exercise"), h("th", { class: "num" }, "Weight"), h("th", {}, "Reps"),
+    h("th", {}, "Range"), h("th", { class: "num" }, "Sessions"), h("th", {}, "State"),
+  ])));
+  const tbody = h("tbody");
+  for (const r of rows) {
+    const label = r.ready_to_progress ? "▲ ready" : r.stalled ? "▲ stalled" : "• holding";
+    tbody.appendChild(h("tr", {}, [
+      h("td", {}, r.exercise),
+      h("td", { class: "num" }, r.working_weight_kg === null ? "–" : fmt(r.working_weight_kg) + " kg"),
+      h("td", {}, (r.reps || []).join(", ") || "–"),
+      h("td", {}, r.rep_range),
+      h("td", { class: "num" }, String(r.sessions_at_weight)),
+      h("td", {}, `${label} — ${r.verdict}`),
+    ]));
+  }
+  table.appendChild(tbody);
+  box.appendChild(table);
+}
+
+function drawRuns(payload) {
+  const box = document.getElementById("runs");
+  box.innerHTML = "";
+  if (!payload.runs.length) { box.appendChild(h("div", { class: "empty" }, "No runs in this window.")); return; }
+  const table = h("table");
+  table.appendChild(h("thead", {}, h("tr", {}, [
+    h("th", {}, "Date"), h("th", { class: "num" }, "Distance"), h("th", { class: "num" }, "Pace"), h("th", { class: "num" }, "Avg HR"),
+  ])));
+  const tbody = h("tbody");
+  for (const r of payload.runs) {
+    tbody.appendChild(h("tr", {}, [
+      h("td", {}, shortDate(r.date)),
+      h("td", { class: "num" }, fmt(r.distance_km, 2) + " km"),
+      h("td", { class: "num" }, r.pace_per_km || "–"),
+      h("td", { class: "num" }, r.avg_heart_rate ? Math.round(r.avg_heart_rate) + " bpm" : "–"),
+    ]));
+  }
+  table.appendChild(tbody);
+  box.appendChild(table);
+}
+
+function drawHealth(payload) {
+  const box = document.getElementById("healthTable");
+  box.innerHTML = "";
+  const days = (payload.days || []).slice().reverse();
+  if (!days.length) { box.appendChild(h("div", { class: "empty" }, "No health data cached.")); return; }
+  const table = h("table");
+  table.appendChild(h("thead", {}, h("tr", {}, [
+    h("th", {}, "Date"), h("th", { class: "num" }, "Sleep"), h("th", { class: "num" }, "Rest HR"), h("th", { class: "num" }, "Steps"),
+  ])));
+  const tbody = h("tbody");
+  for (const d of days) {
+    const sleep = d.sleep_minutes_asleep;
+    tbody.appendChild(h("tr", {}, [
+      h("td", {}, shortDate(d.date)),
+      h("td", { class: "num" }, sleep ? `${Math.floor(sleep / 60)}h ${String(Math.round(sleep % 60)).padStart(2, "0")}` : "–"),
+      h("td", { class: "num" }, d.resting_heart_rate ? Math.round(d.resting_heart_rate) : "–"),
+      h("td", { class: "num" }, d.steps ? Math.round(d.steps).toLocaleString() : "–"),
+    ]));
+  }
+  table.appendChild(tbody);
+  box.appendChild(table);
+}
+
+// --- wiring ----------------------------------------------------------------
+
+function renderAll() {
+  const d = state.data;
+  if (!d) return;
+  document.getElementById("subtitle").textContent =
+    `${d.volume.workouts} workouts this week · ${d.insights.length} insight${d.insights.length === 1 ? "" : "s"}`;
+  document.getElementById("volumeDesc").textContent =
+    `Effective sets per muscle group · ${d.volume.window}`;
+  document.getElementById("strengthDesc").textContent =
+    `Estimated 1RM per session, top working set (Epley) · ${d.strength.window}`;
+  drawTiles(d);
+  drawInsights(d.insights);
+  drawStrength(document.getElementById("strengthPlot"), document.getElementById("strengthLegend"),
+    document.getElementById("strengthTable"), d.strength);
+  drawVolume(document.getElementById("volumePlot"), document.getElementById("volumeTable"), d.volume);
+  drawTrend(document.getElementById("trendPlot"), document.getElementById("trendTable"), d.trend);
+  drawProgression(d.progression);
+  drawRuns(d.runs);
+  drawHealth(d.health);
+}
+
+async function load() {
+  const wrap = document.querySelector(".wrap");
+  // Hold the previous render at reduced opacity rather than flashing a skeleton.
+  if (state.data) wrap.classList.add("refetching");
+  try {
+    const res = await fetch("/api/dashboard");
+    if (!res.ok) throw new Error(await res.text());
+    state.data = await res.json();
+    renderAll();
+  } catch (err) {
+    document.getElementById("subtitle").textContent = "failed to load — " + err.message;
+  } finally {
+    wrap.classList.remove("refetching");
+  }
+}
+
+async function refetchScoped() {
+  const wrap = document.querySelector(".wrap");
+  wrap.classList.add("refetching");
+  try {
+    const [vol, trend, strength] = await Promise.all([
+      fetch(`/api/volume?window=${state.window}`).then((r) => r.json()),
+      fetch(`/api/trend?weeks=${state.weeks}`).then((r) => r.json()),
+      fetch(`/api/strength?weeks=${Math.max(state.weeks, 8)}`).then((r) => r.json()),
+    ]);
+    state.data.volume = vol;
+    state.data.trend = trend;
+    state.data.strength = strength;
+    renderAll();
+  } finally {
+    wrap.classList.remove("refetching");
+  }
+}
+
+function bindSeg(id, key, cast) {
+  document.getElementById(id).addEventListener("click", (evt) => {
+    const btn = evt.target.closest("button");
+    if (!btn) return;
+    for (const b of evt.currentTarget.querySelectorAll("button")) b.setAttribute("aria-pressed", String(b === btn));
+    state[key] = cast(btn.dataset[key === "window" ? "window" : "weeks"]);
+    refetchScoped();
+  });
+}
+bindSeg("weekSeg", "window", String);
+bindSeg("weeksSeg", "weeks", Number);
+
+for (const btn of document.querySelectorAll("[data-table]")) {
+  btn.addEventListener("click", () => {
+    const box = document.getElementById(btn.dataset.table);
+    const showing = !box.hidden;
+    box.hidden = showing;
+    btn.setAttribute("aria-pressed", String(!showing));
+  });
+}
+
+document.getElementById("themeBtn").addEventListener("click", () => {
+  const root = document.documentElement;
+  const dark = root.dataset.theme
+    ? root.dataset.theme === "dark"
+    : window.matchMedia("(prefers-color-scheme: dark)").matches;
+  root.dataset.theme = dark ? "light" : "dark";
+  renderAll();  // marks reference CSS vars, but re-render keeps measured layout honest
+});
+
+document.getElementById("syncBtn").addEventListener("click", async (evt) => {
+  const btn = evt.currentTarget;
+  const note = document.getElementById("syncNote");
+  btn.disabled = true; note.textContent = "syncing…";
+  try {
+    const res = await fetch("/api/sync", { method: "POST" });
+    const out = await res.json();
+    note.textContent = `synced · ${out.total_workouts} workouts cached`;
+    await load();
+  } catch (err) {
+    note.textContent = "sync failed — " + err.message;
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+let resizeTimer;
+window.addEventListener("resize", () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(renderAll, 150);
+});
+
+load();
+</script>
+</body>
+</html>

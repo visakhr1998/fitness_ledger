@@ -253,6 +253,52 @@ def cmd_exercises(config: Config, args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_insights(config: Config, args: argparse.Namespace) -> int:
+    from .queries import insight_report
+
+    with open_repo(config) as repo:
+        rows = insight_report(repo, config)
+        if args.json:
+            print(json.dumps(rows, indent=2))
+            return 0
+        if not rows:
+            print("Nothing flagged.")
+            return 0
+        for row in rows:
+            marker = "!" if row["severity"] == "warn" else "-"
+            print(f" {marker} [{row['rule']}] {row['message']}")
+    return 0
+
+
+def cmd_progression(config: Config, args: argparse.Namespace) -> int:
+    from .queries import progression_report
+
+    with open_repo(config) as repo:
+        rows = progression_report(repo, config)
+        if args.json:
+            print(json.dumps(rows, indent=2))
+            return 0
+        for row in rows:
+            weight = "-" if row["working_weight_kg"] is None else f"{row['working_weight_kg']:g} kg"
+            reps = ",".join(str(r) for r in row["reps"]) or "-"
+            print(f"  {row['exercise'][:34]:<36}{weight:>9}  reps {reps:<10} [{row['rep_range']}]  {row['verdict']}")
+    return 0
+
+
+def cmd_serve(config: Config, args: argparse.Namespace) -> int:
+    import uvicorn
+
+    print(f"Dashboard on http://{args.host}:{args.port}  (Ctrl-C to stop)")
+    uvicorn.run(
+        "fitness_ledger.api:app",
+        host=args.host,
+        port=args.port,
+        reload=args.reload,
+        log_level="warning",
+    )
+    return 0
+
+
 async def cmd_ask(config: Config, args: argparse.Namespace) -> int:
     from .chat import answer
 
@@ -315,6 +361,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_ask = sub.add_parser("ask", help="natural language question (needs a model key)")
     p_ask.add_argument("question")
 
+    sub.add_parser("insights", help="run the detection rules")
+    sub.add_parser("progression", help="double progression state per main lift")
+
+    p_serve = sub.add_parser("serve", help="run the dashboard")
+    p_serve.add_argument("--host", default="127.0.0.1")
+    p_serve.add_argument("--port", type=int, default=8000)
+    p_serve.add_argument("--reload", action="store_true")
+
     return parser
 
 
@@ -333,6 +387,9 @@ HANDLERS = {
     "health": cmd_health,
     "targets": cmd_targets,
     "exercises": cmd_exercises,
+    "insights": cmd_insights,
+    "progression": cmd_progression,
+    "serve": cmd_serve,
 }
 
 
