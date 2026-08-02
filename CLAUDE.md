@@ -10,10 +10,11 @@ parallel by tracking **volume per muscle group against targets**. Data comes fro
 Hevy (lifts) and Google Health (runs, sleep, resting HR) via local stdio MCP
 servers.
 
-**Current state: v0.2 complete.** v0.1 was the deterministic core (sync, volume
-math, CLI); v0.2 added the FastAPI backend, dashboard, double-progression state,
-and insight rules. v0.3 is planning and adaptation; v0.4 is hosting and
-scheduled runs. Full plan lives in the roadmap the user supplied — ask for it if
+**Current state: v0.3 complete.** v0.1 was the deterministic core (sync, volume
+math, CLI); v0.2 added the FastAPI backend, a dashboard, double-progression state
+and insight rules; v0.3 split the UI into Run and Gym on React + Vite, added the
+Aerobic Efficiency Index, vitals, a coach and chat dock, and approval-gated Hevy
+write-back. v0.4 is hosting and scheduled runs. Full plan lives in the roadmap the user supplied — ask for it if
 a decision seems to depend on it.
 
 ## Design principles — these govern every decision
@@ -32,7 +33,7 @@ a decision seems to depend on it.
 
 When the week is constrained, the priority order is: **volume per muscle group →
 full-body coverage → runs on track → session count.** This ranking is the
-objective function for v0.3 redistribution and is the single most important
+objective function for redistribution and is the single most important
 encoded rule in the system.
 
 ## Architecture rules
@@ -83,6 +84,17 @@ Resolved decisions worth not re-litigating:
   done, not what was intended — a heavy top set plus a back-off is
   indistinguishable from a failed range attempt. Only sets at the session's top
   weight count toward a progression decision.
+- **AEI grade is binned over 25 m, never per sample.** Raw 1 Hz GPS altitude put
+  the 95th-percentile grade at 41% on a flat run, and Minetti's curve is
+  asymmetric, so symmetric noise biases the result *upward* rather than
+  cancelling. Binning cut the inflation from 23% to 10%.
+- **`aei.METHOD_VERSION` is part of the value's identity.** The binning choice
+  moves AEI ~10%, so a figure computed under a different method is not
+  comparable. Change a constant, bump the version; stored runs recompute from
+  `run_segments` without re-downloading.
+- **One accent, one series per chart.** The reference palette fails the
+  categorical validator outright (cyan-to-teal ΔE 12.1, floor 15) but never puts
+  two series in one chart. Facet instead of overlaying.
 
 ## Two window vocabularies — do not mix them
 
@@ -116,19 +128,29 @@ All handled in `sync.py` / `mcp_client.py`; don't rediscover them.
   leading `Error:` so a bad request can't read as "no data".
 - Not every data type supports every action: sleep and resting HR are
   list-only; steps supports `daily_rollup`.
+- **A TCX export is ~1.2 MB and ~1,950 trackpoints per run**, returned as
+  `{"tcxData": "<xml>"}` -- not raw text. Fetch once per run, store the 25 m
+  bins, and recompute from those.
+- **Device summaries and GPS tracks disagree.** One session Google Health
+  reported as 936 m had a 66 m track; another was a 2-second mis-tap. AEI has
+  reliability guards for both, and excluded runs carry a stated reason.
 
 ## Working here
 
 ```bash
-./.venv/Scripts/python.exe -m pytest              # 95 tests, keep them green
+./.venv/Scripts/python.exe -m pytest              # 178 tests, keep them green
+cd frontend && npm run build                      # required after any frontend change
 ./.venv/Scripts/python.exe -m fitness_ledger.cli doctor
 ./.venv/Scripts/python.exe -m fitness_ledger.cli sync
 ./.venv/Scripts/python.exe -m fitness_ledger.cli serve   # dashboard on :8000
 ```
 
 Use the repo venv, not the system Python. The package is installed editable.
-`uvicorn` runs without reload, so restart the server after Python changes; the
-HTML is read from disk per request.
+`uvicorn` runs without reload, so **restart the server after Python changes**.
+The frontend is a **Vite build** -- editing `frontend/src` changes nothing until
+`npm run build` writes `src/fitness_ledger/web/dist`, which FastAPI serves and
+which **is committed** so a clone runs with Python alone. Vite is pinned to 6
+because `create-vite@latest` needs Node 20.12+ and this machine has 20.11.
 
 Expectations for changes:
 
@@ -153,12 +175,14 @@ Expectations for changes:
 
 ## Don't do these yet
 
-- **No write-back to Hevy before v0.3**, and when it lands it stays gated on
-  explicit approval: propose → diff → confirm → write.
+- **Write-back must stay approval-gated.** propose → diff → confirm → write →
+  log. The propose step never calls Hevy. **Hevy has no delete endpoint**, so an
+  accidental write can only be undone by hand in the app; never remove the diff.
 - **Don't implement the `drift` insight rule.** It compares logged sessions
-  against *planned* ones, and Plan/Availability don't exist until v0.3.
-  Approximating it from habitual training days invents a signal.
-- **Don't add ADK before v0.3.** A chat call with tools is a direct model call.
+  against *planned* ones, and Plan/Availability still do not exist.
+- **Don't add ADK yet.** A chat call with tools is a direct model call.
+- **The chat dock needs `ANTHROPIC_API_KEY`.** Without it the dock says so; the
+  rest of the dashboard must never depend on it.
 
 ## Updating this file
 

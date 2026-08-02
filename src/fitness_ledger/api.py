@@ -2,12 +2,12 @@
 
 Every endpoint is a thin wrapper over queries.py -- no computation happens here,
 so the API and the CLI can never disagree about a number. Read-only apart from
-target configuration and an explicitly triggered sync; nothing writes to Hevy in
-v0.2.
+settings, an explicitly triggered sync, and approval-gated Hevy write-back.
 """
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -16,7 +16,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import queries, sections
+from . import queries, sections, writeback
 from .config import Config
 from .db import SQLiteRepository
 from .models import VolumeTarget
@@ -24,7 +24,7 @@ from .queries import WindowError
 
 WEB_DIR = Path(__file__).parent / "web"
 
-app = FastAPI(title="Fitness ledger", version="0.2.0")
+app = FastAPI(title="Fitness ledger", version="0.3.0")
 _config = Config.load()
 
 
@@ -283,6 +283,80 @@ async def start_sync(
 @app.get("/api/sync/status")
 def sync_status() -> dict[str, Any]:
     return _sync_state
+
+
+# --- write-back -------------------------------------------------------------
+# propose -> diff -> confirm -> write -> log. The propose step never calls Hevy,
+# and nothing writes without a separate approval of a specific proposal id.
+
+
+class RoutineProposal(BaseModel):
+    title: str = Field(min_length=1, max_length=120)
+    exercise_ids: list[str] = Field(min_length=1, max_length=20)
+    sets_per_exercise: int = Field(default=3, ge=1, le=10)
+
+
+@app.post("/api/writeback/propose")
+def propose_routine(request: RoutineProposal) -> dict[str, Any]:
+    """Draft a routine and store it for review. No Hevy call happens here."""
+    with repo() as repository:
+        proposal = writeback.build_routine(
+            repository, _config, request.title, request.exercise_ids, request.sets_per_exercise
+        )
+        if not proposal.exercises:
+            raise HTTPException(status_code=400, detail="none of those exercise ids exist")
+        difference = writeback.diff(proposal)
+        proposal_id = repository.record_proposal(
+            "routine", proposal.summary(), proposal.as_payload(), difference
+        )
+    return {
+        "id": proposal_id,
+        "summary": proposal.summary(),
+        "payload": proposal.as_payload(),
+        "diff": difference,
+        "status": "proposed",
+    }
+
+
+@app.post("/api/writeback/{proposal_id}/approve")
+async def approve_routine(proposal_id: int) -> dict[str, Any]:
+    """Write an already-reviewed proposal to Hevy. Irreversible via the API."""
+    from .mcp_client import MCPError, hevy_client
+
+    with repo() as repository:
+        stored = repository.get_proposal(proposal_id)
+        if stored is None:
+            raise HTTPException(status_code=404, detail=f"no proposal {proposal_id}")
+        if stored["status"] != "proposed":
+            raise HTTPException(
+                status_code=409,
+                detail=f"proposal {proposal_id} is already {stored['status']}",
+            )
+
+        payload = json.loads(stored["payload_json"])
+        try:
+            async with hevy_client(_config) as hevy:
+                created = await hevy.call("hevy_create_routine", {"params": payload})
+        except MCPError as exc:
+            repository.mark_proposal(proposal_id, "failed", error=str(exc))
+            raise HTTPException(status_code=502, detail=f"Hevy rejected it: {exc}") from exc
+
+        hevy_id = None
+        if isinstance(created, dict):
+            body = created.get("routine") or created
+            if isinstance(body, list) and body:
+                body = body[0]
+            hevy_id = body.get("id") if isinstance(body, dict) else None
+        repository.mark_proposal(proposal_id, "written", hevy_id=hevy_id)
+
+    return {"id": proposal_id, "status": "written", "hevy_id": hevy_id}
+
+
+@app.get("/api/writeback")
+def list_writebacks(limit: int = Query(30, ge=1, le=200)) -> list[dict[str, Any]]:
+    """Audit trail. Hevy cannot delete, so this is the record of what we caused."""
+    with repo() as repository:
+        return repository.list_proposals(limit)
 
 
 class ChatRequest(BaseModel):

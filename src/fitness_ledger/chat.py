@@ -13,7 +13,7 @@ from typing import Any
 
 from .config import Config
 from .db import SQLiteRepository
-from . import queries
+from . import queries, sections
 
 SYSTEM_PROMPT = """You are a training assistant with read access to one person's \
 Hevy lifting log and Google Health data.
@@ -23,6 +23,11 @@ How volume is defined here, so your language matches the numbers:
   (sets where the muscle is primary) + {secondary_weight} x (sets where it is secondary)
 - warmup sets are {warmup_policy}
 - frequency = number of distinct days in the window that muscle was trained
+- AEI (Aerobic Efficiency Index) = grade-adjusted metres travelled per heart beat.
+  Higher is better. Grade comes from Minetti's cost curve over 25 m distance bins.
+  It is only comparable between runs of similar length: a long run at high heart
+  rate scores lower than a short easy one, so do not read that as lost fitness.
+  Some runs are excluded for unreliable GPS; say so rather than ignoring them.
 - weeks run {week_start_name} to {week_end_name}
 
 Rules:
@@ -121,6 +126,63 @@ TOOLS: list[dict[str, Any]] = [
             "required": ["window"],
         },
     },
+    # --- v0.3 -------------------------------------------------------------
+    {
+        "name": "get_run_section",
+        "description": (
+            "Running summary: Aerobic Efficiency Index (grade-adjusted metres per "
+            "heart beat) per run and its trend, run counts, distance and average "
+            "heart rate. Also lists runs excluded from AEI and why."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "window": {"type": "string", "description": "e.g. last-90-days"},
+                "start": {"type": "string"},
+                "end": {"type": "string"},
+            },
+        },
+    },
+    {
+        "name": "get_gym_section",
+        "description": "Effective sets per muscle group and tonnage per period against its average.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "window": {"type": "string"},
+                "start": {"type": "string"},
+                "end": {"type": "string"},
+            },
+        },
+    },
+    {
+        "name": "get_vitals",
+        "description": (
+            "Age, height, weight, resting heart rate, VO2 max, max heart rate, "
+            "Karvonen heart-rate zones and BMR. Says which figures are estimates."
+        ),
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "get_exercise_detail",
+        "description": (
+            "One exercise over a window: estimated 1RM per session, "
+            "double-progression state, whether it is stalled, and volume."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "exercise": {"type": "string", "description": "name, fuzzy matched"},
+                "window": {"type": "string"},
+            },
+            "required": ["exercise"],
+        },
+    },
+    {
+        "name": "list_exercises",
+        "description": "Exercises the user actually trains, most-logged first.",
+        "input_schema": {"type": "object", "properties": {}},
+    },
 ]
 
 
@@ -152,6 +214,33 @@ def dispatch(
         return queries.run_log(repo, config, arguments.get("window", "last-4-weeks"))
     if name == "get_health":
         return queries.health_summary(repo, config, arguments.get("window", "last-2-weeks"))
+
+    if name == "get_run_section":
+        return sections.run_section(
+            repo, config, arguments.get("window", "last-90-days"),
+            arguments.get("start"), arguments.get("end"),
+        )
+    if name == "get_gym_section":
+        return sections.gym_section(
+            repo, config, arguments.get("window", "last-90-days"),
+            arguments.get("start"), arguments.get("end"),
+        )
+    if name == "get_vitals":
+        return sections.vitals_card(repo, config)
+    if name == "list_exercises":
+        # Trimmed: the model needs names and ids, not every muscle group.
+        return [
+            {"id": row["id"], "title": row["title"], "logged_sets": row["logged_sets"]}
+            for row in sections.exercise_catalog(repo, only_logged=True)[:60]
+        ]
+    if name == "get_exercise_detail":
+        matches = queries.find_exercise(repo, arguments["exercise"], limit=1)
+        if not matches:
+            return {"error": f"no exercise matching {arguments['exercise']!r}"}
+        return sections.exercise_detail(
+            repo, config, matches[0]["id"], arguments.get("window", "last-90-days")
+        )
+
     return {"error": f"unknown tool {name}"}
 
 

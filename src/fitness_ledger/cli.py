@@ -6,6 +6,7 @@ import argparse
 import asyncio
 import json
 import sys
+from pathlib import Path
 from datetime import date, timedelta
 
 from .config import Config
@@ -285,6 +286,36 @@ def cmd_progression(config: Config, args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_export(config: Config, args: argparse.Namespace) -> int:
+    """Dump every table to JSON.
+
+    Migration readiness: the move to a hosted store later should be a load, not
+    a rewrite. Nothing outside db.py knows the data lives in a file, and this
+    gives that claim something to stand on.
+    """
+    with open_repo(config) as repo:
+        tables = [
+            row[0]
+            for row in repo.conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+            )
+        ]
+        dump = {
+            table: [dict(row) for row in repo.conn.execute(f"SELECT * FROM {table}")]
+            for table in sorted(tables)
+        }
+
+    payload = json.dumps(dump, indent=2, default=str)
+    if args.out:
+        Path(args.out).write_text(payload, encoding="utf-8")
+        print(f"Wrote {len(payload):,} bytes to {args.out}")
+        for table, rows in dump.items():
+            print(f"  {table:<22}{len(rows):>7} rows")
+    else:
+        print(payload)
+    return 0
+
+
 def cmd_serve(config: Config, args: argparse.Namespace) -> int:
     import uvicorn
 
@@ -361,6 +392,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_ask = sub.add_parser("ask", help="natural language question (needs a model key)")
     p_ask.add_argument("question")
 
+    p_export = sub.add_parser("export", help="dump every table to JSON for migration")
+    p_export.add_argument("--out", default=None, help="file to write (default: stdout)")
+
     sub.add_parser("insights", help="run the detection rules")
     sub.add_parser("progression", help="double progression state per main lift")
 
@@ -390,6 +424,7 @@ HANDLERS = {
     "insights": cmd_insights,
     "progression": cmd_progression,
     "serve": cmd_serve,
+    "export": cmd_export,
 }
 
 

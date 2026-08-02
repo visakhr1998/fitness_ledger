@@ -10,6 +10,7 @@ import {
 import { MetricCard } from "../components/shell";
 import { ExerciseIcon } from "../components/ExerciseIcon";
 import { VitalsCard } from "../components/VitalsCard";
+import { WriteBack } from "../components/WriteBack";
 import { ErrorNote, Loading } from "./RunScreen";
 
 export function GymScreen({ range, reloadKey }: { range: Range; reloadKey: number }) {
@@ -112,6 +113,8 @@ export function GymScreen({ range, reloadKey }: { range: Range; reloadKey: numbe
         </Card>
 
         <ExerciseExplorer catalog={catalog} range={range} />
+
+        <WriteBack catalog={catalog} />
       </div>
 
       <div style={{ display: "grid", gap: "var(--gap)", position: "sticky", top: 12 }}>
