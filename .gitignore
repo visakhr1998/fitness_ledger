@@ -182,3 +182,8 @@ cython_debug/
 # Fitness ledger: local cache of personal training data
 data/
 *.db
+
+# Frontend build tooling
+node_modules/
+frontend/dist/
+src/fitness_ledger/web/dist/

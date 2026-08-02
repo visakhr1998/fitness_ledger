@@ -10,9 +10,11 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, AsyncIterator
 
+from . import aei
 from .db import SQLiteRepository, local_date_of
-from .mcp_client import MCPClient, MCPTruncatedError
+from .mcp_client import MCPClient, MCPError, MCPTruncatedError
 from .models import ExerciseTemplate
+from .tcx import parse_tcx
 
 LAST_SYNC_KEY = "hevy_last_sync_at"
 
@@ -365,9 +367,137 @@ async def _sync_resting_hr(
     return repo.upsert_health_daily(rows) if rows else 0
 
 
+async def sync_run_metrics(
+    health: MCPClient, repo: SQLiteRepository, *, limit: int | None = None
+) -> dict[str, int]:
+    """Compute AEI for runs that do not yet have it at the current method.
+
+    One TCX export is ~1.2 MB, so this is deliberately incremental: a run is
+    fetched once, its 25 m bins are stored, and a later method change recomputes
+    from those bins instead of downloading again.
+    """
+    pending = repo.run_ids_needing_metrics(aei.METHOD_VERSION)
+    if limit is not None:
+        pending = pending[:limit]
+
+    computed = recomputed = failed = unreliable = 0
+    for run_id, local_date, reported_distance in pending:
+        # Prefer replaying stored bins over re-fetching the export.
+        stored = repo.get_run_segments(run_id)
+        if stored:
+            segments = [
+                aei.Segment(
+                    index=row["idx"],
+                    distance_m=row["distance_m"],
+                    grade=row["grade"],
+                    heart_rate=row["heart_rate"],
+                    seconds=row["seconds"],
+                )
+                for row in stored
+            ]
+            actual = sum(s.distance_m for s in segments)
+            beats = sum(
+                (s.heart_rate or 0.0) * (s.seconds / 60.0) for s in segments
+            )
+            metrics = aei.from_segments(
+                segments, date.fromisoformat(local_date), actual, beats
+            )
+            ok, reason, coverage = aei.reliability(actual, reported_distance)
+            repo.upsert_run_metrics(
+                run_id, metrics, segments,
+                reported_distance_m=reported_distance,
+                reliable=ok, unreliable_reason=reason, track_coverage=coverage,
+            )
+            recomputed += 1
+            unreliable += 0 if ok else 1
+            continue
+
+        try:
+            payload = await health.call(
+                "googlehealth_export_exercise_tcx", {"data_point_id": run_id}
+            )
+        except MCPError:
+            failed += 1
+            continue
+
+        points = parse_tcx(_tcx_text(payload))
+        if len(points) < 2:
+            failed += 1
+            continue
+
+        metrics = aei.compute(points, date.fromisoformat(local_date))
+        ok, reason, coverage = aei.reliability(metrics.actual_distance_m, reported_distance)
+        repo.upsert_run_metrics(
+            run_id, metrics, aei.segment_run(points),
+            reported_distance_m=reported_distance,
+            reliable=ok, unreliable_reason=reason, track_coverage=coverage,
+        )
+        computed += 1
+        unreliable += 0 if ok else 1
+
+    return {
+        "computed": computed,
+        "recomputed": recomputed,
+        "failed": failed,
+        "unreliable": unreliable,
+    }
+
+
+async def sync_vitals(health: MCPClient, repo: SQLiteRepository) -> dict[str, Any]:
+    """Cache height, weight and VO2 max as daily health rows.
+
+    Weight arrives from more than one source -- Hevy via Health Connect and a
+    manual Fitbit entry disagreed by 2.8 kg -- so it goes through reconcile
+    rather than whichever page happened to come back first.
+    """
+    out: dict[str, Any] = {}
+
+    for metric, data_type, extract in (
+        ("weight_kg", "weight", lambda e: _f(e.get("weightGrams")) and _f(e.get("weightGrams")) / 1000.0),
+        ("height_cm", "height", lambda e: _f(e.get("heightMillimeters")) and _f(e.get("heightMillimeters")) / 10.0),
+        ("vo2_max", "daily-vo2-max", lambda e: _f(e.get("vo2Max"))),
+    ):
+        rows: list[tuple[str, str, float | None, str | None, str]] = []
+        tool = "googlehealth_reconcile" if data_type == "weight" else "googlehealth_list_data_points"
+        try:
+            async for payload in _pages(health, tool, {"data_type": data_type}, page_size=25, max_pages=4):
+                for point in payload.get("dataPoints") or []:
+                    entry = point.get(_camel(data_type)) or {}
+                    day = _civil_date({"date": (entry.get("date") or (entry.get("sampleTime") or {}).get("civilTime", {}).get("date"))})
+                    value = extract(entry)
+                    if day and value is not None:
+                        rows.append((day.isoformat(), metric, value, None, ""))
+                        if data_type == "daily-vo2-max":
+                            level = entry.get("cardioFitnessLevel")
+                            if level:
+                                rows.append((day.isoformat(), "cardio_fitness_level", None, level, ""))
+        except MCPError as exc:
+            out[metric] = f"error: {exc}"
+            continue
+        out[metric] = repo.upsert_health_daily(rows) if rows else 0
+
+    return out
+
+
 # --- parsing helpers -------------------------------------------------------
 # Google Health returns numbers as strings and durations as "1970s"; converting
 # defensively keeps a format surprise from becoming a wrong number.
+
+
+def _tcx_text(payload: Any) -> str:
+    """Pull the TCX document out of an export response.
+
+    The server wraps it as {"tcxData": "<xml…>"}; older shapes returned the
+    markup directly, and an unparseable payload falls through as {"text": …}.
+    """
+    if isinstance(payload, str):
+        return payload
+    if isinstance(payload, dict):
+        for key in ("tcxData", "tcx", "text", "data"):
+            value = payload.get(key)
+            if isinstance(value, str) and value:
+                return value
+    return ""
 
 
 def _f(value: Any) -> float | None:

@@ -3,7 +3,7 @@ every number the app reports, so the semantics are pinned here."""
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 
 import pytest
 
@@ -67,3 +67,28 @@ def test_unknown_window_raises():
 def test_describe_window_renders_inclusive_dates():
     assert describe_window(date(2026, 7, 20), date(2026, 7, 27)) == "2026-07-20 to 2026-07-26"
     assert describe_window(date(2026, 7, 20), date(2026, 7, 21)) == "2026-07-20"
+
+
+# --- v0.3 filter additions -------------------------------------------------
+# The Run/Gym filter offers days, weeks, months and a custom range. These must
+# not disturb the complete-week semantics the insight baselines depend on.
+
+
+def test_months_are_thirty_day_steps_including_today():
+    assert parse_window("last-3-months", TODAY) == (date(2026, 4, 30), date(2026, 7, 30))
+
+
+def test_hours_resolve_to_whole_days():
+    # Buckets are never finer than a day; under 24h means "today".
+    assert parse_window("last-6-hours", TODAY) == (TODAY, TODAY + timedelta(days=1))
+    assert parse_window("last-48-hours", TODAY) == (TODAY - timedelta(days=2), TODAY + timedelta(days=1))
+
+
+def test_custom_range_still_wins_over_the_new_patterns():
+    assert parse_window("2026-05-01:2026-05-31", TODAY) == (date(2026, 5, 1), date(2026, 6, 1))
+
+
+def test_complete_week_semantics_are_untouched_by_the_additions():
+    current = date(2026, 7, 27)
+    assert parse_window("last-week", TODAY) == (date(2026, 7, 20), current)
+    assert parse_window("last-4-weeks", TODAY) == (date(2026, 6, 29), current)
