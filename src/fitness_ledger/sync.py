@@ -452,6 +452,17 @@ async def sync_vitals(health: MCPClient, repo: SQLiteRepository) -> dict[str, An
     """
     out: dict[str, Any] = {}
 
+    # Age lives on the profile, not in a data stream. Seed it into settings so
+    # the vitals card has it; the user can override it there.
+    try:
+        profile = await health.call("googlehealth_get_profile")
+        age = profile.get("age") if isinstance(profile, dict) else None
+        if age and not repo.get_settings().get("age"):
+            repo.set_setting("age", str(int(age)))
+        out["age"] = age
+    except MCPError as exc:
+        out["age"] = f"error: {exc}"
+
     for metric, data_type, extract in (
         ("weight_kg", "weight", lambda e: _f(e.get("weightGrams")) and _f(e.get("weightGrams")) / 1000.0),
         ("height_cm", "height", lambda e: _f(e.get("heightMillimeters")) and _f(e.get("heightMillimeters")) / 10.0),

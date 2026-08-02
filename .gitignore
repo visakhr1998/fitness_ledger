@@ -187,3 +187,4 @@ data/
 node_modules/
 frontend/dist/
 src/fitness_ledger/web/dist/
+*.tsbuildinfo

@@ -1,0 +1,104 @@
+/* Design tokens, taken from the Google Health reference and contrast-checked
+   against the surface they actually render on.
+
+   One accent, not a categorical palette. The reference's defining property is
+   that every card is a single metric in a single colour -- cyan and teal never
+   compete as series inside one chart. Measured as a categorical set those hues
+   fail hard (all above the dark lightness band, cyan-to-teal only dE 12.1 in
+   normal vision against a floor of 15), so the discipline travels with the
+   look: one series per chart, facet instead of overlay. */
+
+:root {
+  color-scheme: dark;
+
+  --page: #0a0a0a;
+  --surface: #1e1f20;
+  --surface-raised: #26282a;
+  --border: rgba(255, 255, 255, 0.08);
+
+  --text-primary: #e8eaed;   /* 13.70:1 on surface */
+  --text-secondary: #9aa0a6; /*  6.25:1 */
+  --text-muted: #7a7f83;     /*  4.08:1 */
+
+  --accent: #40c4ff;         /*  8.30:1 -- the single series colour */
+  --accent-soft: rgba(64, 196, 255, 0.16);
+  --accent-alt: #4dd8c0;     /*  9.35:1 -- goals and targets, never a series */
+  --assistant: #c3c7f4;      /* 10.06:1 -- the chat affordance */
+  --assistant-ink: #1a1b2e;
+
+  --good: #0ca30c;
+  --warning: #fab219;
+  --serious: #ec835a;
+  --critical: #d03b3b;
+
+  --grid: #2c2c2a;
+  --axis: #3a3c3e;
+
+  --radius-card: 28px;
+  --radius-control: 999px;
+  --gap: 12px;
+
+  /* Roboto if the system has it, then the platform UI sans. Self-hosting a
+     woff2 subset is a follow-up; no CDN, because of CSP and offline use. */
+  --font: Roboto, "Google Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+
+  --page: #f6f7f8;
+  --surface: #ffffff;
+  --surface-raised: #f1f3f4;
+  --border: rgba(11, 11, 11, 0.10);
+
+  --text-primary: #1a1c1e;
+  --text-secondary: #44474a;
+  --text-muted: #6c7075;
+
+  /* Stepped down for the light surface: the dark cyan would fail contrast. */
+  --accent: #0b6ea8;
+  --accent-soft: rgba(11, 110, 168, 0.12);
+  --accent-alt: #0f7a68;
+  --assistant: #4a4fa8;
+  --assistant-ink: #ffffff;
+
+  --grid: #e3e5e7;
+  --axis: #c3c6c9;
+}
+
+* { box-sizing: border-box; }
+
+html, body, #root { height: 100%; }
+
+body {
+  margin: 0;
+  background: var(--page);
+  color: var(--text-primary);
+  font-family: var(--font);
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
+/* Numbers that stand alone use proportional figures; tabular-nums is reserved
+   for columns that must line up vertically. */
+.tabular { font-variant-numeric: tabular-nums; }
+
+.sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+}
