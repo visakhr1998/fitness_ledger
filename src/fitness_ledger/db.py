@@ -100,6 +100,59 @@ CREATE TABLE IF NOT EXISTS exercise_progression (
     rep_low              INTEGER NOT NULL,
     rep_high             INTEGER NOT NULL
 );
+
+-- One AEI record per run. method_version is part of the identity of the value:
+-- a figure computed under a different binning is not comparable, so a version
+-- bump invalidates rows rather than mixing them into the same series.
+CREATE TABLE IF NOT EXISTS run_metrics (
+    run_id               TEXT PRIMARY KEY,
+    local_date           TEXT NOT NULL,
+    actual_distance_m    REAL,
+    adjusted_distance_m  REAL,
+    avg_heart_rate       REAL,
+    total_beats          REAL,
+    aei                  REAL,
+    method_version       INTEGER NOT NULL,
+    computed_at          TEXT NOT NULL,
+    reported_distance_m  REAL,
+    track_coverage       REAL,
+    reliable             INTEGER NOT NULL DEFAULT 1,
+    unreliable_reason    TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_run_metrics_date ON run_metrics(local_date);
+
+-- The 25 m bins behind each AEI. Keeping these means changing the method
+-- recomputes locally instead of re-downloading ~1.2 MB of TCX per run.
+CREATE TABLE IF NOT EXISTS run_segments (
+    run_id      TEXT NOT NULL REFERENCES run_metrics(run_id) ON DELETE CASCADE,
+    idx         INTEGER NOT NULL,
+    distance_m  REAL NOT NULL,
+    grade       REAL NOT NULL,
+    heart_rate  REAL,
+    seconds     REAL NOT NULL,
+    PRIMARY KEY (run_id, idx)
+);
+
+-- Things only the user can tell us: sex for BMR, and overrides that beat a formula.
+CREATE TABLE IF NOT EXISTS user_settings (
+    key   TEXT PRIMARY KEY,
+    value TEXT
+);
+
+-- Every write-back proposal, approved or not. Hevy has no delete endpoint, so
+-- this is the only record of what this app caused to exist.
+CREATE TABLE IF NOT EXISTS writeback_log (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    proposed_at  TEXT NOT NULL,
+    kind         TEXT NOT NULL,
+    summary      TEXT,
+    payload_json TEXT NOT NULL,
+    diff_json    TEXT,
+    status       TEXT NOT NULL DEFAULT 'proposed',
+    hevy_id      TEXT,
+    approved_at  TEXT,
+    error        TEXT
+);
 """
 
 
@@ -131,7 +184,32 @@ class SQLiteRepository:
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA foreign_keys = ON")
         self.conn.executescript(SCHEMA)
+        self._add_missing_columns()
         self.conn.commit()
+
+    def _add_missing_columns(self) -> None:
+        """Bring an existing database up to the current schema.
+
+        CREATE TABLE IF NOT EXISTS silently skips a table that already exists, so
+        columns added later never appear without this.
+        """
+        additions = {
+            "run_metrics": [
+                ("reported_distance_m", "REAL"),
+                ("track_coverage", "REAL"),
+                ("reliable", "INTEGER NOT NULL DEFAULT 1"),
+                ("unreliable_reason", "TEXT"),
+            ],
+        }
+        for table, columns in additions.items():
+            existing = {
+                row["name"] for row in self.conn.execute(f"PRAGMA table_info({table})")
+            }
+            if not existing:
+                continue
+            for name, definition in columns:
+                if name not in existing:
+                    self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
 
     def close(self) -> None:
         self.conn.close()
@@ -418,6 +496,154 @@ class SQLiteRepository:
             [(t.muscle_group, t.sets_per_week, t.frequency_per_week) for t in targets],
         )
         self.conn.commit()
+
+    # --- run metrics (AEI) -------------------------------------------------
+
+    def upsert_run_metrics(
+        self,
+        run_id: str,
+        metrics,
+        segments,
+        *,
+        reported_distance_m: float | None = None,
+        reliable: bool = True,
+        unreliable_reason: str | None = None,
+        track_coverage: float | None = None,
+    ) -> None:
+        """Store one AEI record and the bins it came from."""
+        self.conn.execute(
+            """INSERT INTO run_metrics
+                 (run_id, local_date, actual_distance_m, adjusted_distance_m,
+                  avg_heart_rate, total_beats, aei, method_version, computed_at,
+                  reported_distance_m, track_coverage, reliable, unreliable_reason)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(run_id) DO UPDATE SET
+                 local_date=excluded.local_date,
+                 actual_distance_m=excluded.actual_distance_m,
+                 adjusted_distance_m=excluded.adjusted_distance_m,
+                 avg_heart_rate=excluded.avg_heart_rate,
+                 total_beats=excluded.total_beats,
+                 aei=excluded.aei,
+                 method_version=excluded.method_version,
+                 computed_at=excluded.computed_at,
+                 reported_distance_m=excluded.reported_distance_m,
+                 track_coverage=excluded.track_coverage,
+                 reliable=excluded.reliable,
+                 unreliable_reason=excluded.unreliable_reason""",
+            (
+                run_id,
+                metrics.local_date.isoformat(),
+                metrics.actual_distance_m,
+                metrics.adjusted_distance_m,
+                metrics.avg_heart_rate,
+                metrics.total_beats,
+                metrics.aei,
+                metrics.method_version,
+                datetime.now(timezone.utc).isoformat(),
+                reported_distance_m,
+                track_coverage,
+                int(reliable),
+                unreliable_reason,
+            ),
+        )
+        self.conn.execute("DELETE FROM run_segments WHERE run_id = ?", (run_id,))
+        self.conn.executemany(
+            """INSERT INTO run_segments (run_id, idx, distance_m, grade, heart_rate, seconds)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            [
+                (run_id, s.index, s.distance_m, s.grade, s.heart_rate, s.seconds)
+                for s in segments
+            ],
+        )
+        self.conn.commit()
+
+    def get_run_metrics(self, start: date, end: date) -> list[dict]:
+        cur = self.conn.execute(
+            """SELECT * FROM run_metrics
+                WHERE local_date >= ? AND local_date < ?
+                ORDER BY local_date""",
+            (start.isoformat(), end.isoformat()),
+        )
+        return [dict(row) for row in cur]
+
+    def run_ids_needing_metrics(self, method_version: int) -> list[tuple[str, str, float | None]]:
+        """Runs with no AEI, or one computed under a superseded method."""
+        cur = self.conn.execute(
+            """SELECT r.id, r.local_date, r.distance_m
+                 FROM runs r
+                 LEFT JOIN run_metrics m ON m.run_id = r.id
+                WHERE r.exercise_type = 'RUNNING'
+                  AND (m.run_id IS NULL OR m.method_version <> ?)
+                ORDER BY r.start_time DESC""",
+            (method_version,),
+        )
+        return [(row["id"], row["local_date"], row["distance_m"]) for row in cur]
+
+    def get_run_segments(self, run_id: str) -> list[dict]:
+        cur = self.conn.execute(
+            "SELECT * FROM run_segments WHERE run_id = ? ORDER BY idx", (run_id,)
+        )
+        return [dict(row) for row in cur]
+
+    def max_observed_heart_rate(self) -> float | None:
+        row = self.conn.execute("SELECT MAX(avg_heart_rate) FROM runs").fetchone()
+        return row[0] if row and row[0] else None
+
+    # --- user settings -----------------------------------------------------
+
+    def get_settings(self) -> dict[str, str]:
+        return {row["key"]: row["value"] for row in self.conn.execute("SELECT * FROM user_settings")}
+
+    def set_setting(self, key: str, value: str | None) -> None:
+        if value is None:
+            self.conn.execute("DELETE FROM user_settings WHERE key = ?", (key,))
+        else:
+            self.conn.execute(
+                """INSERT INTO user_settings (key, value) VALUES (?, ?)
+                   ON CONFLICT(key) DO UPDATE SET value=excluded.value""",
+                (key, value),
+            )
+        self.conn.commit()
+
+    # --- write-back audit --------------------------------------------------
+
+    def record_proposal(self, kind: str, summary: str, payload: dict, diff: dict) -> int:
+        cur = self.conn.execute(
+            """INSERT INTO writeback_log (proposed_at, kind, summary, payload_json, diff_json, status)
+               VALUES (?, ?, ?, ?, ?, 'proposed')""",
+            (
+                datetime.now(timezone.utc).isoformat(),
+                kind,
+                summary,
+                json.dumps(payload),
+                json.dumps(diff),
+            ),
+        )
+        self.conn.commit()
+        return int(cur.lastrowid)
+
+    def get_proposal(self, proposal_id: int) -> dict | None:
+        row = self.conn.execute(
+            "SELECT * FROM writeback_log WHERE id = ?", (proposal_id,)
+        ).fetchone()
+        return dict(row) if row else None
+
+    def mark_proposal(
+        self, proposal_id: int, status: str, hevy_id: str | None = None, error: str | None = None
+    ) -> None:
+        self.conn.execute(
+            """UPDATE writeback_log
+                  SET status = ?, hevy_id = ?, error = ?, approved_at = ?
+                WHERE id = ?""",
+            (status, hevy_id, error, datetime.now(timezone.utc).isoformat(), proposal_id),
+        )
+        self.conn.commit()
+
+    def list_proposals(self, limit: int = 50) -> list[dict]:
+        cur = self.conn.execute(
+            "SELECT * FROM writeback_log ORDER BY id DESC LIMIT ?", (limit,)
+        )
+        return [dict(row) for row in cur]
 
     def get_rep_ranges(self) -> dict[str, tuple[int, int]]:
         cur = self.conn.execute("SELECT * FROM exercise_progression")

@@ -65,6 +65,20 @@ def parse_window(
         days = int(match.group(1))
         return today - timedelta(days=days), today + timedelta(days=1)
 
+    # Months are approximated as 30-day steps rather than calendar months: the
+    # filter means "roughly this much history", and calendar arithmetic would
+    # make the window length depend on which month you happen to open the app in.
+    match = re.fullmatch(r"last-(\d+)-months?", text)
+    if match:
+        return today - timedelta(days=30 * int(match.group(1))), today + timedelta(days=1)
+
+    match = re.fullmatch(r"last-(\d+)-hours?", text)
+    if match:
+        # Buckets are never finer than a day, so an hours window still resolves
+        # to whole days -- it just means "today" for anything under 24h.
+        hours = int(match.group(1))
+        return today - timedelta(days=max(hours // 24, 0)), today + timedelta(days=1)
+
     match = re.fullmatch(r"(\d{4})-(\d{2})", text)
     if match:
         year, month = int(match.group(1)), int(match.group(2))

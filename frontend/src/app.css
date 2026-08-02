@@ -1,0 +1,56 @@
+.wrap {
+  max-width: 1240px;
+  margin: 0 auto;
+  padding: 18px 20px 96px;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+.topbar .spacer { flex: 1 1 auto; }
+
+.filterbar {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  padding: 8px 14px;
+  margin-bottom: var(--gap);
+}
+
+.stack {
+  display: grid;
+  gap: var(--gap);
+  /* minmax(0, 1fr), not the implicit `auto`: an auto track sizes to its widest
+     child, and charts measure their container, so an auto track and a measured
+     SVG lock each other at whatever width they first hit. */
+  grid-template-columns: minmax(0, 1fr);
+}
+
+/* Grid and flex children default to min-width:auto, which refuses to shrink
+   below content. Every chart lives in one of these. */
+/* Grid and flex items default to min-width:auto and refuse to shrink below
+   their content, which is what lets one long insight line push the whole page
+   sideways. Applied broadly because every nested grid in the app inherits the
+   same trap. */
+.wrap div, .wrap section, .wrap button, .wrap span, .wrap main { min-width: 0; }
+
+/* A grid with no declared columns gets an implicit `auto` track that sizes to
+   its widest child. Every single-column stack in the app wants 1fr instead. */
+.stack, .coach-list, .detail-stack { grid-template-columns: minmax(0, 1fr); }
+
+/* Desktop-first: the side column collapses under the main content on narrow
+   screens rather than being squeezed. */
+@media (max-width: 1000px) {
+  .run-grid, .gym-grid { grid-template-columns: minmax(0, 1fr) !important; }
+  .radar-row { grid-template-columns: minmax(0, 1fr) !important; }
+  .run-grid > div:last-child, .gym-grid > div:last-child { position: static !important; }
+}
+
+@media (max-width: 720px) {
+  .explorer { grid-template-columns: minmax(0, 1fr) !important; }
+  .wrap { padding: 14px 12px 96px; }
+}

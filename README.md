@@ -1,4 +1,4 @@
-# Fitness ledger — v0.2
+# Fitness ledger — v0.3
 
 Tracks **effective sets per muscle group against weekly targets**, over Hevy
 (lifts) and Google Health (runs, sleep, resting heart rate).
@@ -8,12 +8,60 @@ Tracks **effective sets per muscle group against weekly targets**, over Hevy
 - **v0.2** — the ledger you can look at: FastAPI backend, web dashboard, double
   progression state, and the insight rules.
   *Done when opening the app tells you what you're neglecting without asking.*
+- **v0.3** — Run and Gym as separate sections on React + Vite, the Aerobic
+  Efficiency Index, vitals with heart-rate zones, a coach, a chat dock, and
+  approval-gated Hevy write-back.
 
-Still no planning, no write-back, no ADK — those are v0.3 and v0.4.
+v0.4 is hosting and scheduled runs.
 
 ```bash
 python -m fitness_ledger.cli serve      # dashboard on http://127.0.0.1:8000
 ```
+
+## Aerobic Efficiency Index
+
+One number for whether running is improving: **grade-adjusted metres travelled
+per heart beat**. Higher is better.
+
+```
+cost(g)  = 155.4g⁵ − 30.4g⁴ − 43.3g³ + 46.3g² + 19.5g + 3.6   (Minetti)
+gap      = cost(g) / cost(0)
+adjusted = Σ segment_distance × gap
+beats    = Σ heart_rate × minutes
+AEI      = adjusted_metres / beats
+```
+
+**Grade is measured over 25 m distance bins, not per GPS sample.** That is not a
+refinement, it is the difference between a number and noise: raw 1 Hz altitude
+put the 95th-percentile grade at 41% on a flat run, and because Minetti's curve
+is asymmetric — climbing costs more than descending saves — symmetric error
+biases the result *upward* instead of cancelling. Binning cut the inflation from
+23% to 10%.
+
+Because that choice moves AEI by roughly 10%, every stored value carries a
+`method_version`. Change the method and stored runs recompute from the saved
+25 m bins, without re-downloading 1.2 MB of GPS per run.
+
+Runs are excluded when the data cannot support the metric — a 2-second mis-tap,
+or a session summarised as 936 m whose GPS track held only 66 m. Excluded runs
+appear with the reason rather than vanishing.
+
+## Frontend
+
+`frontend/` is a Vite + React app built into `src/fitness_ledger/web/dist`, which
+is committed so a clone runs with Python alone.
+
+```bash
+cd frontend && npm install && npm run build   # after any frontend change
+npm run dev                                    # port 5173, proxies /api to :8000
+```
+
+Styled after Google Health. The reference's important property is what it
+avoids: every card is one metric in one colour. Measured as a categorical
+palette its hues fail outright — cyan and teal separate by only ΔE 12.1 in
+normal vision against a floor of 15 — but it never puts two series in one chart.
+So the app follows the same rule: **one accent, one series per chart, facet
+instead of overlay**. Every chart still ships a table twin.
 
 ## The volume model
 
@@ -84,6 +132,7 @@ paths and tunables only.
 | `insights` | Run the detection rules |
 | `progression` | Double-progression state per main lift |
 | `serve [--port]` | Run the dashboard |
+| `export [--out]` | Dump every table to JSON, for the eventual move off SQLite |
 | `ask "<question>"` | Natural-language Q&A (needs `ANTHROPIC_API_KEY`) |
 
 Windows accept `this-week`, `last-week`, `last-4-weeks`, `last-30-days`,
@@ -221,8 +270,9 @@ Run the suite with `./.venv/Scripts/python.exe -m pytest`.
 
 ## Non-goals
 
-- **Not an autopilot.** v0.1 is read-only; nothing writes to Hevy. When write-back
-  arrives at v0.3 it stays gated on explicit approval.
+- **Not an autopilot.** Write-back exists but is gated: propose → diff → confirm
+  → write → log, and the propose step never contacts Hevy. Hevy has no delete
+  endpoint, so anything written must be removed by hand in the app.
 - **Not medical advice.** Sleep and resting-HR data are surfaced as the user's own
   history, never as a prescription, and the app has nothing to say about training
   while ill beyond showing past patterns.
@@ -231,7 +281,11 @@ Run the suite with `./.venv/Scripts/python.exe -m pytest`.
 
 ## Next
 
-v0.3 — the redistribution algorithm against the priority ranking, availability
-declaration, plan generation with rationale, append-only plan history, approval
-flow and Hevy write-back, and ADK orchestration. The `drift` insight rule lands
-with it, since that is when planned sessions start to exist.
+v0.4 — scheduled weekly plan generation, a scheduled insight pass, drift
+detection, a notification path, storage moved off local SQLite, credentials in
+Secret Manager, and a deploy behind IAP. `ledger export` exists so that move is
+a load rather than a rewrite.
+
+Still outstanding from v0.3: the redistribution algorithm against the priority
+ranking, availability declaration, and append-only plan history. The `drift`
+insight rule waits on those, since it compares against *planned* sessions.

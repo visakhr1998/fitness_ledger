@@ -182,3 +182,12 @@ cython_debug/
 # Fitness ledger: local cache of personal training data
 data/
 *.db
+
+# Frontend build tooling
+node_modules/
+frontend/dist/
+# web/dist IS committed on purpose: it lets a clone run with Python alone.
+# The Python template's blanket `dist/` above would otherwise swallow it.
+!src/fitness_ledger/web/dist/
+!src/fitness_ledger/web/dist/**
+*.tsbuildinfo

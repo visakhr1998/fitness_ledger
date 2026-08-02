@@ -1,0 +1,235 @@
+/** The coach strip and the chat dock.
+ *
+ * Both are observation surfaces. The coach reports what the rules engine found
+ * and stops there -- no prescriptions -- which is the same discipline the
+ * recovery rule follows on the backend.
+ */
+
+import { useEffect, useState } from "react";
+import { api, type Insight } from "../api";
+import { CoachMascot } from "./ExerciseIcon";
+
+const RULE_LABELS: Record<string, string> = {
+  coverage_gap: "Coverage gap",
+  volume_drop: "Volume drop",
+  stall: "Stalled lift",
+  progression_ready: "Ready to progress",
+  recovery_flag: "Recovery",
+};
+
+export function CoachStrip({ reloadKey }: { reloadKey: number }) {
+  const [insights, setInsights] = useState<Insight[]>([]);
+  const [expanded, setExpanded] = useState<string | null>(null);
+
+  useEffect(() => {
+    api.insights().then(setInsights).catch(() => setInsights([]));
+  }, [reloadKey]);
+
+  if (insights.length === 0) return null;
+
+  // Group by rule: four identical coverage gaps are one finding, not four.
+  const groups = new Map<string, Insight[]>();
+  for (const insight of insights) {
+    groups.set(insight.rule, [...(groups.get(insight.rule) ?? []), insight]);
+  }
+  const ordered = [...groups.entries()].sort(
+    (a, b) => Number(b[1][0].severity === "warn") - Number(a[1][0].severity === "warn"),
+  );
+
+  return (
+    <section
+      style={{
+        background: "var(--surface)", borderRadius: "var(--radius-card)",
+        padding: "18px 22px", border: "1px solid var(--border)",
+      }}
+    >
+      <div style={{ display: "flex", gap: 14, alignItems: "flex-start" }}>
+        <CoachMascot />
+        <div style={{ flex: "1 1 auto", minWidth: 0 }}>
+          <h2 style={{ margin: 0, fontSize: 15, fontWeight: 500 }}>What I noticed</h2>
+          <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 2 }}>
+            Observations from your own history. Nothing here changes your training.
+          </div>
+
+          <div className="coach-list" style={{ display: "grid", gap: 8, marginTop: 12 }}>
+            {ordered.map(([rule, items]) => {
+              const warn = items[0].severity === "warn";
+              const open = expanded === rule;
+              const tone = warn ? "var(--serious)" : "var(--text-muted)";
+              return (
+                <div key={rule}>
+                  <button
+                    onClick={() => setExpanded(open ? null : rule)}
+                    aria-expanded={open}
+                    style={{
+                      display: "flex", alignItems: "center", gap: 10, width: "100%",
+                      textAlign: "left", padding: "8px 12px", borderRadius: 12,
+                      background: "var(--surface-raised)", borderLeft: `3px solid ${tone}`,
+                    }}
+                  >
+                    <span aria-hidden style={{ color: tone, fontSize: 12 }}>{warn ? "▲" : "•"}</span>
+                    <span
+                      style={{
+                        fontSize: 12, fontWeight: 600, color: "var(--text-secondary)",
+                        flex: "0 0 auto", whiteSpace: "nowrap",
+                      }}
+                    >
+                      {RULE_LABELS[rule] ?? rule.replace(/_/g, " ")}
+                    </span>
+                    <span
+                      style={{
+                        // min-width:0 is what lets the ellipsis engage: a flex
+                        // item defaults to min-width:auto and will not shrink
+                        // below its own content, pushing the row past the page.
+                        flex: "1 1 auto", minWidth: 0,
+                        fontSize: 13, color: "var(--text-primary)",
+                        overflow: "hidden", textOverflow: "ellipsis",
+                        whiteSpace: open ? "normal" : "nowrap",
+                      }}
+                    >
+                      {items.length > 1 && !open
+                        ? `${items.length} findings — ${items.map((i) => i.subject.replace(/_/g, " ")).join(", ")}`
+                        : items[0].message}
+                    </span>
+                    <span style={{ color: "var(--text-muted)", fontSize: 11 }}>{open ? "−" : "+"}</span>
+                  </button>
+
+                  {open && (
+                    <ul style={{ margin: "6px 0 0", padding: "0 0 0 30px", display: "grid", gap: 4 }}>
+                      {items.map((item) => (
+                        <li key={item.subject} style={{ fontSize: 13, color: "var(--text-secondary)" }}>
+                          {item.message}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+// --- chat dock -------------------------------------------------------------
+
+type Message = { role: "user" | "assistant"; text: string };
+
+/** Collapsed to a floating affordance, as in the reference. Expands into a
+ *  side panel scoped to whichever section you are looking at. */
+export function ChatDock({ section }: { section: string }) {
+  const [open, setOpen] = useState(false);
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [draft, setDraft] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const send = async () => {
+    const question = draft.trim();
+    if (!question || busy) return;
+    setDraft("");
+    setMessages((prev) => [...prev, { role: "user", text: question }]);
+    setBusy(true);
+    try {
+      const response = await fetch("/api/chat", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ question, section }),
+      });
+      const body = await response.json();
+      setMessages((prev) => [
+        ...prev,
+        { role: "assistant", text: body.reply ?? body.detail ?? "No answer." },
+      ]);
+    } catch (error) {
+      setMessages((prev) => [...prev, { role: "assistant", text: `Failed: ${String(error)}` }]);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (!open) {
+    return (
+      <button
+        onClick={() => setOpen(true)}
+        aria-label="Open assistant"
+        style={{
+          position: "fixed", right: 22, bottom: 22, width: 60, height: 60,
+          borderRadius: 20, background: "var(--assistant)", color: "var(--assistant-ink)",
+          display: "grid", placeItems: "center", boxShadow: "0 10px 28px rgba(0,0,0,0.45)", zIndex: 40,
+        }}
+      >
+        <CoachMascot size={34} />
+      </button>
+    );
+  }
+
+  return (
+    <aside
+      style={{
+        position: "fixed", right: 18, bottom: 18, width: 360, maxWidth: "calc(100vw - 36px)",
+        height: 520, maxHeight: "calc(100vh - 36px)", background: "var(--surface)",
+        border: "1px solid var(--border)", borderRadius: 24, zIndex: 40,
+        display: "flex", flexDirection: "column", boxShadow: "0 18px 48px rgba(0,0,0,0.5)",
+      }}
+    >
+      <header style={{ display: "flex", alignItems: "center", gap: 10, padding: "14px 16px", borderBottom: "1px solid var(--grid)" }}>
+        <CoachMascot size={28} />
+        <div style={{ flex: "1 1 auto" }}>
+          <div style={{ fontSize: 14, fontWeight: 500 }}>Ask about your {section}</div>
+          <div style={{ fontSize: 11, color: "var(--text-muted)" }}>Reads your cached data</div>
+        </div>
+        <button onClick={() => setOpen(false)} aria-label="Close assistant" style={{ color: "var(--text-muted)", fontSize: 18 }}>
+          ×
+        </button>
+      </header>
+
+      <div style={{ flex: "1 1 auto", overflow: "auto", padding: 14, display: "grid", gap: 10, alignContent: "start" }}>
+        {messages.length === 0 && (
+          <div style={{ color: "var(--text-muted)", fontSize: 13 }}>
+            Try “is my AEI improving?” or “what should I train next?”
+          </div>
+        )}
+        {messages.map((message, index) => (
+          <div
+            key={index}
+            style={{
+              justifySelf: message.role === "user" ? "end" : "start",
+              maxWidth: "85%", padding: "8px 12px", borderRadius: 14, fontSize: 13,
+              background: message.role === "user" ? "var(--accent-soft)" : "var(--surface-raised)",
+              color: "var(--text-primary)", whiteSpace: "pre-wrap",
+            }}
+          >
+            {message.text}
+          </div>
+        ))}
+        {busy && <div style={{ color: "var(--text-muted)", fontSize: 13 }}>Thinking…</div>}
+      </div>
+
+      <div style={{ display: "flex", gap: 8, padding: 12, borderTop: "1px solid var(--grid)" }}>
+        <input
+          value={draft}
+          onChange={(event) => setDraft(event.target.value)}
+          onKeyDown={(event) => event.key === "Enter" && send()}
+          placeholder="Ask a question"
+          aria-label="Ask a question"
+          style={{
+            flex: "1 1 auto", background: "var(--surface-raised)", color: "var(--text-primary)",
+            border: "1px solid var(--border)", borderRadius: 12, padding: "9px 12px", fontSize: 13,
+          }}
+        />
+        <button
+          onClick={send}
+          disabled={busy}
+          style={{
+            background: "var(--assistant)", color: "var(--assistant-ink)", borderRadius: 12,
+            padding: "0 16px", fontSize: 13, fontWeight: 600,
+          }}
+        >
+          Send
+        </button>
+      </div>
+    </aside>
+  );
+}
