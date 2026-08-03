@@ -164,8 +164,15 @@ Expectations for changes:
 
 ## Repo conventions
 
-- **Commit directly to `main`.** Solo repo, no remote, no PR flow — skip the
-  branch-first default. Only commit when asked.
+- **Every change goes through a pull request.** Create a branch → make commits →
+  open a PR → review → merge. **Never commit straight to `main`**, even for a
+  one-line docs fix. `origin` is `github.com/visakhr1998/fitness_ledger`. Only
+  commit when asked.
+
+  This replaces an earlier "commit directly to main, no remote, no PR flow" rule
+  that predated the remote. If a commit lands on `main` by mistake, recover in
+  this order: branch at that commit, verify the branch holds it, confirm a clean
+  tree, *then* reset `main` to `origin/main`.
 - **No secrets in this repo, ever.** The Hevy API key lives in hevy-mcp's own
   dotenv; the Google OAuth token in the health server's token file. `.env` here
   holds paths and tunables only. `data/` and `*.db` are git-ignored — the
