@@ -133,11 +133,43 @@ paths and tunables only.
 | `progression` | Double-progression state per main lift |
 | `serve [--port]` | Run the dashboard |
 | `export [--out]` | Dump every table to JSON, for the eventual move off SQLite |
-| `ask "<question>"` | Natural-language Q&A (needs `ANTHROPIC_API_KEY`) |
+| `ask "<question>"` | Natural-language Q&A (needs a model provider — see below) |
 
 Windows accept `this-week`, `last-week`, `last-4-weeks`, `last-30-days`,
 `2026-07`, or `2026-07-01:2026-07-31`. `last-N-weeks` means N **complete** weeks,
 excluding the part-finished current one, so trailing averages aren't diluted.
+
+## Choosing a model provider
+
+`ask` and the chat dock need a model; **nothing else does**. Because the model
+never computes — it picks a tool and phrases the dict that comes back — a small
+free model does this job about as well as a frontier one. Set `LLM_PROVIDER` in
+`.env`:
+
+| Provider | Set | Cost | Notes |
+|---|---|---|---|
+| `gemini` | `GEMINI_API_KEY` | free tier | Key from [AI Studio](https://aistudio.google.com/apikey), no card. Default. |
+| `ollama` | *(nothing)* | free | Local. `ollama pull qwen3:4b` first. Nothing leaves the machine. |
+| `anthropic` | `ANTHROPIC_API_KEY` | paid | Best prose; also picks up an `ant auth login` profile if no key is set. |
+| `openai-compatible` | `LLM_BASE_URL`, `LLM_MODEL` | varies | Groq, OpenRouter, self-hosted vLLM. |
+
+Leave `LLM_PROVIDER` blank to auto-select whichever key exists, preferring the
+free one. `LLM_MODEL` overrides the model for any provider.
+
+Two things worth knowing before picking:
+
+- **The model must support tool calling.** The whole loop is 13 tool calls; a
+  model without it doesn't degrade, it fails. `gemma3` has no tool support in
+  Ollama — use `qwen3` locally.
+- **Thinking is disabled on Gemini by default** (`LLM_REASONING_EFFORT=none`).
+  Reasoning tokens are charged against the output ceiling without appearing in
+  the reply — measured 554 of them on an 11-token prompt — which cut answers off
+  mid-sentence. The model isn't allowed to reason about numbers here, so the
+  budget is better spent on the answer.
+- **Free tiers are usually paid for with your data.** Outside the EEA, UK and
+  Switzerland, Gemini's free tier permits Google to use prompts for product
+  improvement, with human review in scope. The dock sends derived training
+  metrics *and your questions*. Use `ollama` if that matters to you.
 
 ## Insight rules
 

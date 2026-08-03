@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 from datetime import date, timedelta
 
+from . import llm
 from .config import Config
 from .db import SQLiteRepository
 from .mcp_client import hevy_client, health_client
@@ -61,7 +62,11 @@ async def cmd_doctor(config: Config, args: argparse.Namespace) -> int:
 
     with open_repo(config) as repo:
         print(f"  database      {config.db_path} ({repo.count_workouts()} workouts cached)")
-    print(f"  model         {'configured' if config.anthropic_api_key else 'NO API KEY (ask disabled)'}")
+    provider = llm.resolve_provider(config)
+    if provider == "none":
+        print("  model         NO PROVIDER (ask disabled; set GEMINI_API_KEY)")
+    else:
+        print(f"  model         {provider} / {llm.model_name(config)}")
     return 0 if ok else 1
 
 

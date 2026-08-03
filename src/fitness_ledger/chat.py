@@ -3,6 +3,11 @@
 The model gets tools that return already-computed state and is told, explicitly,
 not to do arithmetic. Every number in an answer comes from the rules engine, so
 "the LLM did the maths wrong" is not a failure mode this app has.
+
+That property is what makes the model swappable: picking a tool and phrasing the
+dict it returns is an easy job, so a small free model does it about as well as a
+frontier one. `llm.py` holds the transports; tools are declared once here, in
+Anthropic's schema, and translated per provider.
 """
 
 from __future__ import annotations
@@ -13,7 +18,7 @@ from typing import Any
 
 from .config import Config
 from .db import SQLiteRepository
-from . import queries, sections
+from . import llm, queries, sections
 
 SYSTEM_PROMPT = """You are a training assistant with read access to one person's \
 Hevy lifting log and Google Health data.
@@ -260,48 +265,37 @@ def build_system_prompt(config: Config) -> str:
 async def answer(
     repo: SQLiteRepository, config: Config, question: str, max_turns: int = 6
 ) -> str:
-    """Answer a natural language question by letting the model call query tools."""
-    if not config.anthropic_api_key:
-        raise RuntimeError(
-            "ANTHROPIC_API_KEY is not set, so `ask` is unavailable. "
-            "Every other command works without it."
-        )
+    """Answer a natural language question by letting the model call query tools.
 
-    from anthropic import AsyncAnthropic
-
-    client = AsyncAnthropic(api_key=config.anthropic_api_key)
-    messages: list[dict[str, Any]] = [{"role": "user", "content": question}]
+    Provider-agnostic: `llm.build` picks the transport from config, and this loop
+    only sees normalised turns. Which vendor answers has no bearing on any number
+    in the reply -- every figure comes from `dispatch`.
+    """
+    transport = llm.build(config, build_system_prompt(config), TOOLS)
+    transport.ask(question)
 
     for _ in range(max_turns):
-        response = await client.messages.create(
-            model=config.anthropic_model,
-            max_tokens=1500,
-            system=build_system_prompt(config),
-            tools=TOOLS,
-            messages=messages,
-        )
+        turn = await transport.turn()
 
-        if response.stop_reason != "tool_use":
-            return "".join(
-                block.text for block in response.content if block.type == "text"
-            ).strip()
+        if not turn.tool_calls:
+            if turn.truncated:
+                # A cut-off reply reads as the model trailing off. Say what
+                # happened instead, so the cause is fixable rather than eerie.
+                return (
+                    turn.text
+                    + "\n\n[Reply cut off at the token limit. Raise it, or set "
+                    "LLM_REASONING_EFFORT=none if the model is spending the "
+                    "budget on thinking.]"
+                )
+            return turn.text
 
-        messages.append({"role": "assistant", "content": response.content})
-        results = []
-        for block in response.content:
-            if block.type != "tool_use":
-                continue
+        results: list[tuple[llm.ToolCall, str]] = []
+        for call in turn.tool_calls:
             try:
-                payload = dispatch(repo, config, block.name, block.input or {})
+                payload = dispatch(repo, config, call.name, call.arguments)
             except Exception as exc:  # noqa: BLE001 - surface tool errors to the model
                 payload = {"error": str(exc)}
-            results.append(
-                {
-                    "type": "tool_result",
-                    "tool_use_id": block.id,
-                    "content": json.dumps(payload, default=str),
-                }
-            )
-        messages.append({"role": "user", "content": results})
+            results.append((call, json.dumps(payload, default=str)))
+        transport.record(results)
 
     return "Gave up after too many tool calls without reaching an answer."

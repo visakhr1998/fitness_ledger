@@ -47,6 +47,7 @@ API ─┘        │              (rules engine: pure, tested, no I/O)
               ▲
           sync.py ──► mcp_client.py ──► Hevy MCP · Google Health MCP
           chat.py ──► queries.py as tools
+             └──► llm.py (transports: anthropic · openai-compatible)
 ```
 
 - **The rules engine is pure.** `volume.py`, `progression.py` and `insights.py`
@@ -95,6 +96,14 @@ Resolved decisions worth not re-litigating:
 - **One accent, one series per chart.** The reference palette fails the
   categorical validator outright (cyan-to-teal ΔE 12.1, floor 15) but never puts
   two series in one chart. Facet instead of overlaying.
+- **The model is swappable because it never computes.** Picking a tool and
+  phrasing the dict it returns is an easy job, so a free Gemini Flash or a local
+  `qwen3:4b` answers about as well as a frontier model. Tools are declared once
+  in Anthropic's schema and translated in `llm.py`; a new provider must never
+  mean restating thirteen tool definitions.
+- **A provider must support tool calling.** The loop is entirely tool calls, so a
+  model without it fails outright rather than degrading. `gemma3` has no tool
+  support in Ollama — that is why the local default is `qwen3:4b`.
 
 ## Two window vocabularies — do not mix them
 
@@ -181,8 +190,9 @@ Expectations for changes:
 - **Don't implement the `drift` insight rule.** It compares logged sessions
   against *planned* ones, and Plan/Availability still do not exist.
 - **Don't add ADK yet.** A chat call with tools is a direct model call.
-- **The chat dock needs `ANTHROPIC_API_KEY`.** Without it the dock says so; the
-  rest of the dashboard must never depend on it.
+- **The chat dock needs *a* model provider, not a specific one.** Gemini's free
+  tier is the default; `ollama` runs it locally. Without any provider the dock
+  says so; the rest of the dashboard must never depend on one.
 
 ## Updating this file
 

@@ -373,18 +373,12 @@ async def chat(request: ChatRequest) -> dict[str, str]:
     """
     from .chat import answer
 
-    if not _config.anthropic_api_key:
-        raise HTTPException(
-            status_code=503,
-            detail=(
-                "The assistant needs ANTHROPIC_API_KEY in .env. Everything else "
-                "on the dashboard works without it."
-            ),
-        )
     with repo() as repository:
         try:
             reply = await answer(repository, _config, request.question)
         except RuntimeError as exc:
+            # Covers llm.ProviderError (nothing configured, or configured wrong).
+            # The dock shows this text, so it has to say what to do about it.
             raise HTTPException(status_code=503, detail=str(exc)) from exc
     return {"reply": reply}
 
