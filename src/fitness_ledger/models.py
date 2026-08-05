@@ -97,6 +97,121 @@ class VolumeTarget:
         return "large" if self.muscle_group in LARGE_MUSCLES else "small"
 
 
+# --- what the coach plans toward -------------------------------------------
+
+GOAL_TYPES = frozenset(
+    {"strength_1rm", "running_volume", "running_aei", "consistency"}
+)
+GOAL_STATUSES = frozenset({"active", "achieved", "abandoned"})
+
+# A declared unavailability is a fact the user stated. An inferred one is this
+# app's guess from a planned session with no logged match. The coach must be
+# able to tell them apart, because it should explain itself differently: "you
+# said you were away" is not "it looks like you missed this".
+AVAILABILITY_SOURCES = frozenset({"declared", "inferred"})
+
+
+@dataclass(frozen=True)
+class Goal:
+    """Something the user is training toward.
+
+    Distinct from a :class:`VolumeTarget`, which is a weekly maintenance level.
+    A target says "keep chest at 14 sets a week"; a goal says "get bench to
+    100 kg". The coach needs both: targets define the deficit it works from,
+    goals decide which deficits are worth prioritising.
+    """
+
+    type: str
+    target_value: float
+    subject: str | None = None  # exercise name for strength goals, else None
+    target_date: date | None = None
+    status: str = "active"
+    id: int | None = None  # assigned by storage
+    created_at: datetime | None = None
+
+    def __post_init__(self) -> None:
+        # Validated here rather than at the CLI so every entry point gets it. A
+        # typo'd type would otherwise store a goal nothing ever reads.
+        if self.type not in GOAL_TYPES:
+            raise ValueError(
+                f"unknown goal type {self.type!r}; expected one of {sorted(GOAL_TYPES)}"
+            )
+        if self.status not in GOAL_STATUSES:
+            raise ValueError(
+                f"unknown goal status {self.status!r}; expected one of {sorted(GOAL_STATUSES)}"
+            )
+        if self.type == "strength_1rm" and not self.subject:
+            raise ValueError("a strength_1rm goal needs a subject (the exercise)")
+
+    @property
+    def is_active(self) -> bool:
+        return self.status == "active"
+
+    def as_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "type": self.type,
+            "subject": self.subject,
+            "target_value": self.target_value,
+            "target_date": self.target_date.isoformat() if self.target_date else None,
+            "status": self.status,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+        }
+
+
+@dataclass(frozen=True)
+class RunningTarget:
+    """Weekly running maintenance level.
+
+    Deliberately shaped like :class:`VolumeTarget` -- an amount plus a
+    frequency -- so the existing window-scaling logic applies unchanged: four
+    weeks of runs are compared against four weeks of target.
+
+    Without this the priority ranking's third rank ("runs on track") has
+    nothing to measure, and so cannot be protected when the week is squeezed.
+    """
+
+    distance_km_per_week: float
+    sessions_per_week: int = 2
+
+    def as_dict(self) -> dict:
+        return {
+            "distance_km_per_week": self.distance_km_per_week,
+            "sessions_per_week": self.sessions_per_week,
+        }
+
+
+@dataclass(frozen=True)
+class Availability:
+    """Whether a given day can be trained on.
+
+    Only exceptions are stored. A day with no row is available, so declaring
+    availability is never required -- the user only ever records the days they
+    lose. `local_date` rather than `date` to match every other date-bearing
+    model here, all of which are calendar days at the configured offset.
+    """
+
+    local_date: date
+    available: bool = False
+    reason: str | None = None
+    source: str = "declared"
+
+    def __post_init__(self) -> None:
+        if self.source not in AVAILABILITY_SOURCES:
+            raise ValueError(
+                f"unknown availability source {self.source!r}; "
+                f"expected one of {sorted(AVAILABILITY_SOURCES)}"
+            )
+
+    def as_dict(self) -> dict:
+        return {
+            "date": self.local_date.isoformat(),
+            "available": self.available,
+            "reason": self.reason,
+            "source": self.source,
+        }
+
+
 @dataclass
 class MuscleVolume:
     """Computed volume for one muscle group over one window."""
