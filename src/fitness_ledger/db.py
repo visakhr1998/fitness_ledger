@@ -9,11 +9,22 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterable, Protocol
 
-from .models import ExerciseTemplate, Run, SetEntry, VolumeTarget, Workout
+from .models import (
+    GOAL_STATUSES,
+    Availability,
+    ExerciseTemplate,
+    Goal,
+    Run,
+    RunningTarget,
+    SetEntry,
+    VolumeTarget,
+    Workout,
+)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS exercise_templates (
@@ -139,6 +150,29 @@ CREATE TABLE IF NOT EXISTS user_settings (
     value TEXT
 );
 
+-- What the user is training toward. Distinct from volume_targets, which is a
+-- weekly maintenance level: a target says "keep chest at 14 sets", a goal says
+-- "get bench to 100 kg". The coach reads targets to find the deficit and goals
+-- to decide which deficits matter.
+CREATE TABLE IF NOT EXISTS goals (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    type         TEXT NOT NULL,
+    subject      TEXT,
+    target_value REAL NOT NULL,
+    target_date  TEXT,
+    status       TEXT NOT NULL DEFAULT 'active',
+    created_at   TEXT NOT NULL
+);
+
+-- Only exceptions are recorded: a day with no row is available. Declaring a
+-- day lost is what triggers a replan, so this table is normally near-empty.
+CREATE TABLE IF NOT EXISTS availability (
+    local_date TEXT PRIMARY KEY,
+    available  INTEGER NOT NULL DEFAULT 0,
+    reason     TEXT,
+    source     TEXT NOT NULL DEFAULT 'declared'
+);
+
 -- Every write-back proposal, approved or not. Hevy has no delete endpoint, so
 -- this is the only record of what this app caused to exist.
 CREATE TABLE IF NOT EXISTS writeback_log (
@@ -171,6 +205,13 @@ class Repository(Protocol):
     def set_targets(self, targets: Iterable[VolumeTarget]) -> None: ...
     def get_state(self, key: str) -> str | None: ...
     def set_state(self, key: str, value: str) -> None: ...
+    def add_goal(self, goal: Goal) -> Goal: ...
+    def get_goals(self, include_inactive: bool = False) -> list[Goal]: ...
+    def set_goal_status(self, goal_id: int, status: str) -> bool: ...
+    def get_running_target(self) -> RunningTarget | None: ...
+    def set_running_target(self, target: RunningTarget | None) -> None: ...
+    def set_availability(self, entry: Availability) -> None: ...
+    def get_availability(self, start: date, end: date) -> dict[date, Availability]: ...
 
 
 class SQLiteRepository:
@@ -604,6 +645,126 @@ class SQLiteRepository:
                 (key, value),
             )
         self.conn.commit()
+
+    # --- goals ---------------------------------------------------------------
+
+    # The running target is a single pair of numbers, not a per-row collection
+    # like volume_targets, so it lives in user_settings rather than earning a
+    # table of its own.
+    RUNNING_DISTANCE_KEY = "running_distance_km_per_week"
+    RUNNING_SESSIONS_KEY = "running_sessions_per_week"
+
+    def add_goal(self, goal: Goal) -> Goal:
+        """Insert a goal and return it with the assigned id."""
+        created = goal.created_at or datetime.now(timezone.utc)
+        cur = self.conn.execute(
+            """INSERT INTO goals (type, subject, target_value, target_date, status, created_at)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (
+                goal.type,
+                goal.subject,
+                goal.target_value,
+                goal.target_date.isoformat() if goal.target_date else None,
+                goal.status,
+                created.isoformat(),
+            ),
+        )
+        self.conn.commit()
+        return replace(goal, id=cur.lastrowid, created_at=created)
+
+    def get_goals(self, include_inactive: bool = False) -> list[Goal]:
+        sql = "SELECT * FROM goals"
+        if not include_inactive:
+            sql += " WHERE status = 'active'"
+        sql += " ORDER BY created_at DESC, id DESC"
+        return [self._goal(row) for row in self.conn.execute(sql)]
+
+    def set_goal_status(self, goal_id: int, status: str) -> bool:
+        """Mark a goal achieved or abandoned. Goals are never deleted -- an
+        abandoned goal is part of why later plans looked the way they did."""
+        if status not in GOAL_STATUSES:
+            raise ValueError(f"unknown goal status {status!r}")
+        cur = self.conn.execute(
+            "UPDATE goals SET status = ? WHERE id = ?", (status, goal_id)
+        )
+        self.conn.commit()
+        return cur.rowcount > 0
+
+    @staticmethod
+    def _goal(row: sqlite3.Row) -> Goal:
+        return Goal(
+            id=row["id"],
+            type=row["type"],
+            subject=row["subject"],
+            target_value=row["target_value"],
+            target_date=date.fromisoformat(row["target_date"]) if row["target_date"] else None,
+            status=row["status"],
+            created_at=datetime.fromisoformat(row["created_at"]) if row["created_at"] else None,
+        )
+
+    def get_running_target(self) -> RunningTarget | None:
+        """None means running has no target, so it cannot be protected in the
+        priority ranking -- the coach has to say so rather than assume one."""
+        settings = self.get_settings()
+        distance = settings.get(self.RUNNING_DISTANCE_KEY)
+        if distance is None:
+            return None
+        sessions = settings.get(self.RUNNING_SESSIONS_KEY)
+        return RunningTarget(
+            distance_km_per_week=float(distance),
+            sessions_per_week=int(sessions) if sessions else 2,
+        )
+
+    def set_running_target(self, target: RunningTarget | None) -> None:
+        if target is None:
+            self.set_setting(self.RUNNING_DISTANCE_KEY, None)
+            self.set_setting(self.RUNNING_SESSIONS_KEY, None)
+            return
+        self.set_setting(self.RUNNING_DISTANCE_KEY, str(target.distance_km_per_week))
+        self.set_setting(self.RUNNING_SESSIONS_KEY, str(target.sessions_per_week))
+
+    # --- availability --------------------------------------------------------
+
+    def set_availability(self, entry: Availability) -> None:
+        """Record a day as lost (or restore it). Re-declaring a day overwrites,
+        so the user can correct a mistake without a delete command."""
+        self.conn.execute(
+            """INSERT INTO availability (local_date, available, reason, source)
+               VALUES (?, ?, ?, ?)
+               ON CONFLICT(local_date) DO UPDATE SET
+                   available=excluded.available,
+                   reason=excluded.reason,
+                   source=excluded.source""",
+            (entry.local_date.isoformat(), int(entry.available), entry.reason, entry.source),
+        )
+        self.conn.commit()
+
+    def clear_availability(self, day: date) -> bool:
+        """Forget an exception entirely, returning the day to available."""
+        cur = self.conn.execute(
+            "DELETE FROM availability WHERE local_date = ?", (day.isoformat(),)
+        )
+        self.conn.commit()
+        return cur.rowcount > 0
+
+    def get_availability(self, start: date, end: date) -> dict[date, Availability]:
+        """Exceptions in a closed-open window, keyed by day. Days absent from
+        the result are available -- callers must not treat a missing key as
+        unknown."""
+        rows = self.conn.execute(
+            "SELECT * FROM availability WHERE local_date >= ? AND local_date < ? ORDER BY local_date",
+            (start.isoformat(), end.isoformat()),
+        )
+        entries = [
+            Availability(
+                local_date=date.fromisoformat(row["local_date"]),
+                available=bool(row["available"]),
+                reason=row["reason"],
+                source=row["source"],
+            )
+            for row in rows
+        ]
+        return {entry.local_date: entry for entry in entries}
 
     # --- write-back audit --------------------------------------------------
 

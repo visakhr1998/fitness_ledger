@@ -13,7 +13,7 @@ from . import llm
 from .config import Config
 from .db import SQLiteRepository
 from .mcp_client import hevy_client, health_client
-from .models import VolumeTarget
+from .models import Availability, Goal, RunningTarget, VolumeTarget
 from .queries import (
     describe_window,
     exercise_progress,
@@ -249,6 +249,96 @@ def cmd_targets(config: Config, args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_goals(config: Config, args: argparse.Namespace) -> int:
+    """Show, add, or close goals, plus the weekly running target.
+
+    Goals are what the coach plans toward; volume and running targets are the
+    maintenance levels it measures against. Both live here because setting one
+    without the other leaves the coach unable to explain a trade-off.
+    """
+    with open_repo(config) as repo:
+        if args.set_running is not None:
+            distance, _, sessions = args.set_running.partition("/")
+            repo.set_running_target(
+                RunningTarget(
+                    distance_km_per_week=float(distance),
+                    sessions_per_week=int(sessions) if sessions else 2,
+                )
+            )
+            print("Running target updated.")
+
+        if args.add:
+            goal_type, _, value = args.add.partition("=")
+            goal = repo.add_goal(
+                Goal(
+                    type=goal_type.strip(),
+                    target_value=float(value),
+                    subject=args.subject,
+                    target_date=date.fromisoformat(args.by) if args.by else None,
+                )
+            )
+            print(f"Added goal #{goal.id}.")
+
+        if args.done is not None:
+            status = "abandoned" if args.abandon else "achieved"
+            if repo.set_goal_status(args.done, status):
+                print(f"Goal #{args.done} marked {status}.")
+            else:
+                print(f"No goal #{args.done}.")
+                return 1
+
+        goals = repo.get_goals(include_inactive=args.all)
+        if not goals:
+            print("  no goals set - the coach has nothing to plan toward")
+        for goal in goals:
+            subject = f" {goal.subject}" if goal.subject else ""
+            by = f"  by {goal.target_date}" if goal.target_date else ""
+            flag = "" if goal.is_active else f"  [{goal.status}]"
+            print(f"  #{goal.id:<3} {goal.type}{subject}  ->  {goal.target_value:g}{by}{flag}")
+
+        target = repo.get_running_target()
+        if target:
+            print(
+                f"  running target   {target.distance_km_per_week:g} km/week "
+                f"across {target.sessions_per_week} run(s)"
+            )
+        else:
+            # Priority rank 3 is "runs on track"; with no target there is
+            # nothing to hold it to.
+            print("  running target   not set - running cannot be protected when the week is tight")
+    return 0
+
+
+def cmd_unavailable(config: Config, args: argparse.Namespace) -> int:
+    """Declare a day lost, or hand it back. This is what triggers a replan."""
+    with open_repo(config) as repo:
+        day = date.fromisoformat(args.date)
+        if args.clear:
+            if repo.clear_availability(day):
+                print(f"{day} is available again.")
+            else:
+                print(f"{day} was not marked unavailable.")
+            return 0
+
+        repo.set_availability(Availability(local_date=day, reason=args.reason))
+        reason = f" ({args.reason})" if args.reason else ""
+        print(f"{day} marked unavailable{reason}.")
+
+        # Show the rest of that week, so the consequence is visible at once.
+        monday = day - timedelta(days=day.weekday())
+        others = {
+            entry_day: entry
+            for entry_day, entry in repo.get_availability(monday, monday + timedelta(days=7)).items()
+            if entry_day != day
+        }
+        if others:
+            print("  also unavailable this week:")
+            for entry_day in sorted(others):
+                note = f" - {others[entry_day].reason}" if others[entry_day].reason else ""
+                print(f"    {entry_day} [{others[entry_day].source}]{note}")
+    return 0
+
+
 def cmd_exercises(config: Config, args: argparse.Namespace) -> int:
     with open_repo(config) as repo:
         for row in find_exercise(repo, args.query, args.limit):
@@ -390,6 +480,26 @@ def build_parser() -> argparse.ArgumentParser:
     p_targets = sub.add_parser("targets", help="show or set volume targets")
     p_targets.add_argument("--set", nargs="*", metavar="MUSCLE=SETS")
 
+    p_goals = sub.add_parser("goals", help="show or set training goals and the running target")
+    p_goals.add_argument(
+        "--add", metavar="TYPE=VALUE",
+        help="e.g. strength_1rm=100 (with --subject), running_volume=25, consistency=4",
+    )
+    p_goals.add_argument("--subject", help="exercise name, required for strength_1rm")
+    p_goals.add_argument("--by", metavar="YYYY-MM-DD", help="optional target date")
+    p_goals.add_argument("--done", type=int, metavar="ID", help="mark a goal achieved")
+    p_goals.add_argument("--abandon", action="store_true", help="with --done, mark abandoned instead")
+    p_goals.add_argument("--all", action="store_true", help="include achieved and abandoned")
+    p_goals.add_argument(
+        "--set-running", metavar="KM[/RUNS]",
+        help="weekly running target, e.g. 25 or 25/3",
+    )
+
+    p_unavailable = sub.add_parser("unavailable", help="declare a day you cannot train")
+    p_unavailable.add_argument("date", help="YYYY-MM-DD")
+    p_unavailable.add_argument("--reason", help="free text, e.g. work")
+    p_unavailable.add_argument("--clear", action="store_true", help="hand the day back")
+
     p_exercises = sub.add_parser("exercises", help="search the exercise catalog")
     p_exercises.add_argument("query")
     p_exercises.add_argument("--limit", type=int, default=5)
@@ -425,6 +535,8 @@ HANDLERS = {
     "runs": cmd_runs,
     "health": cmd_health,
     "targets": cmd_targets,
+    "goals": cmd_goals,
+    "unavailable": cmd_unavailable,
     "exercises": cmd_exercises,
     "insights": cmd_insights,
     "progression": cmd_progression,
