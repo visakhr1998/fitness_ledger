@@ -1,0 +1,81 @@
+"""Wiring the coach to a model.
+
+Small surface, but two things here fail far from their cause if they are
+wrong: handing ADK a model id belonging to a different provider, and letting a
+missing optional dependency surface as a bare ModuleNotFoundError.
+"""
+
+from __future__ import annotations
+
+import pytest
+
+from fitness_ledger.coach import CoachUnavailable, configure_adk_environment
+from fitness_ledger.config import Config
+
+
+def config(**overrides) -> Config:
+    base = Config(
+        db_path="unused",
+        hevy_command="x", hevy_args=[], hevy_env={},
+        health_command="x", health_args=[], health_env={},
+    )
+    from dataclasses import replace
+
+    return replace(base, **overrides)
+
+
+@pytest.fixture(autouse=True)
+def clean_env(monkeypatch):
+    # configure_adk_environment uses setdefault, so a leaked value from an
+    # earlier test would make the next one pass for the wrong reason.
+    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+    monkeypatch.delenv("GOOGLE_GENAI_USE_VERTEXAI", raising=False)
+
+
+def test_without_a_key_the_coach_says_what_to_do(monkeypatch):
+    with pytest.raises(CoachUnavailable, match="GEMINI_API_KEY"):
+        configure_adk_environment(config())
+
+
+def test_the_gemini_key_is_bridged_to_the_name_adk_reads(monkeypatch):
+    # The app stores GEMINI_API_KEY; ADK reads GOOGLE_API_KEY. One key in one
+    # place, or the dock and the coach end up authenticated differently.
+    import os
+
+    configure_adk_environment(config(gemini_api_key="secret"))
+    assert os.environ["GOOGLE_API_KEY"] == "secret"
+    assert os.environ["GOOGLE_GENAI_USE_VERTEXAI"] == "FALSE"
+
+
+def test_an_explicit_google_api_key_is_not_overridden(monkeypatch):
+    # Someone pointing ADK somewhere deliberately should stay pointed there.
+    monkeypatch.setenv("GOOGLE_API_KEY", "theirs")
+    configure_adk_environment(config(gemini_api_key="ours"))
+
+    import os
+
+    assert os.environ["GOOGLE_API_KEY"] == "theirs"
+
+
+def test_the_default_model_is_the_gemini_one():
+    assert configure_adk_environment(config(gemini_api_key="k")) == "gemini-2.5-flash"
+
+
+def test_llm_model_applies_when_the_dock_is_on_gemini():
+    model = configure_adk_environment(
+        config(gemini_api_key="k", llm_provider="gemini", llm_model="gemini-3.5-flash")
+    )
+    assert model == "gemini-3.5-flash"
+
+
+def test_a_model_belonging_to_another_provider_is_ignored():
+    """The one that would fail far from its cause.
+
+    LLM_MODEL overrides whichever provider the *dock* uses. If the dock is on
+    Ollama, honouring it hands ADK the string "qwen3:4b" and the failure
+    surfaces inside a model call, not here.
+    """
+    model = configure_adk_environment(
+        config(gemini_api_key="k", llm_provider="ollama", llm_model="qwen3:4b")
+    )
+    assert model == "gemini-2.5-flash"
