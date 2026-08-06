@@ -339,6 +339,49 @@ def cmd_unavailable(config: Config, args: argparse.Namespace) -> int:
     return 0
 
 
+async def cmd_plan(config: Config, args: argparse.Namespace) -> int:
+    """Propose a week. Nothing is written anywhere -- this only prints."""
+    from .coach import CoachUnavailable
+
+    with open_repo(config) as repo:
+        try:
+            from .coach.agent import propose_week
+
+            week = date.fromisoformat(args.week) if args.week else None
+            result = await propose_week(repo, config, week)
+        except CoachUnavailable as exc:
+            print(exc)
+            return 1
+
+    proposal = result["proposal"]
+    if not proposal:
+        print("The coach returned no proposal.")
+        return 1
+
+    print(f"Proposed week of {result['week_start']}\n")
+    for session in proposal["sessions"]:
+        label = session.get("focus") or session["kind"]
+        print(f"  {session['session_date']}  {label}")
+        for exercise in session.get("exercises") or []:
+            targets = ", ".join(exercise.get("targets") or []) or "-"
+            print(f"      {exercise['title']:<34} {targets}")
+        if session.get("distance_km"):
+            print(f"      {session['distance_km']:g} km")
+
+    print(f"\n  why: {proposal['rationale']}")
+    if proposal.get("trade_offs"):
+        print(f"  gave up: {proposal['trade_offs']}")
+    if args.trace:
+        print("\n  tools called:")
+        for step in result["agent_trace"]:
+            print(f"    {step['tool']}({step['args']})")
+
+    # Set counts and weights are deliberately absent: they are computed from
+    # the deficit, not chosen by the model. That lands with the assembler.
+    print("\n  (proposal only -- no sets, no weights, nothing written)")
+    return 0
+
+
 def cmd_exercises(config: Config, args: argparse.Namespace) -> int:
     with open_repo(config) as repo:
         for row in find_exercise(repo, args.query, args.limit):
@@ -500,6 +543,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_unavailable.add_argument("--reason", help="free text, e.g. work")
     p_unavailable.add_argument("--clear", action="store_true", help="hand the day back")
 
+    p_plan = sub.add_parser("plan", help="propose a training week (needs the coach extra)")
+    p_plan.add_argument("--week", metavar="YYYY-MM-DD", help="Monday to plan; default next week")
+    p_plan.add_argument("--trace", action="store_true", help="show the tool calls the coach made")
+
     p_exercises = sub.add_parser("exercises", help="search the exercise catalog")
     p_exercises.add_argument("query")
     p_exercises.add_argument("--limit", type=int, default=5)
@@ -521,7 +568,7 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-ASYNC_COMMANDS = {"doctor", "sync", "ask"}
+ASYNC_COMMANDS = {"doctor", "sync", "ask", "plan"}
 
 HANDLERS = {
     "doctor": cmd_doctor,
@@ -536,6 +583,7 @@ HANDLERS = {
     "health": cmd_health,
     "targets": cmd_targets,
     "goals": cmd_goals,
+    "plan": cmd_plan,
     "unavailable": cmd_unavailable,
     "exercises": cmd_exercises,
     "insights": cmd_insights,
