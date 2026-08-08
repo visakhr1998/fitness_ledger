@@ -1,23 +1,30 @@
 """The coach itself.
 
-A single LlmAgent for now; the split into strength and running planners comes
-later. It runs behind the context reader in a SequentialAgent, so the picture
-is already in session state before the model is asked anything.
+Two planners behind the context reader, run in order:
 
-Two properties are enforced structurally rather than by asking nicely:
+    context_reader  ->  strength_planner  ->  running_planner
 
-- **The output shape carries no set counts.** WeekProposal has nowhere to put
-  one. The agent chooses exercises and days; the assembler computes how many
-  sets each gets from the tool-reported deficit. A rule the model could break
-  is a rule that eventually gets broken, so it is expressed as a schema.
+**Sequential, not parallel.** Running placement depends on strength placement --
+you cannot decide where an easy run fits without knowing which day squats landed
+on -- and parallel sub-agents multiply requests per turn. On a free tier of
+~15 RPM that is the difference between working and 429s.
+
+The split is not just tidiness. One agent holding the whole week had to weigh
+lifting deficits and running targets in a single pass, and running lost every
+time: it is a smaller part of the prompt and the deficit numbers shout louder.
+Giving running its own turn, with the lifting week already fixed, makes it a
+placement problem it can actually solve.
+
+Two properties stay enforced structurally rather than by asking nicely:
+
+- **No output shape carries a set count.** The agents choose exercises and days;
+  `planning.py` computes how many sets each gets from the tool-reported deficit.
+  A rule the model could break is a rule that eventually gets broken, so it is
+  expressed as a schema with nowhere to put a violation.
 
 - **Numbers come from state or tools, never from the model.** Everything the
-  proposal carries is an identifier, a date, or prose about them.
-
-The instruction states the priority ranking, but does not rely on the model to
-apply it correctly -- the scorer checks that deterministically once the plan
-exists. The instruction exists so the agent tries; the scorer exists so we
-find out whether trying was enough.
+  proposals carry is an identifier, a date, a distance the running target
+  implies, or prose about them.
 """
 
 from __future__ import annotations
@@ -38,6 +45,9 @@ from .tools import build_tools
 ADK_INTERNAL_CALLS = frozenset({"set_model_response"})
 
 
+# --- what each planner may return -------------------------------------------
+
+
 class PlannedExercise(BaseModel):
     """One exercise in a session. Deliberately carries no set count."""
 
@@ -52,17 +62,15 @@ class PlannedExercise(BaseModel):
 
 
 class PlannedSession(BaseModel):
+    """A lifting day."""
+
     session_date: str = Field(description="YYYY-MM-DD, must be one of the training days")
-    kind: str = Field(description="'lift' or 'run'")
-    focus: str = Field(default="", description="short label, e.g. upper, lower, easy run")
+    focus: str = Field(default="", description="short label, e.g. upper, lower, push")
     exercises: list[PlannedExercise] = Field(default_factory=list)
-    distance_km: float | None = Field(
-        default=None, description="runs only; leave null for lifting sessions"
-    )
 
 
-class WeekProposal(BaseModel):
-    """What the agent is allowed to return."""
+class StrengthProposal(BaseModel):
+    """What the strength planner is allowed to return."""
 
     sessions: list[PlannedSession]
     rationale: str = Field(
@@ -70,11 +78,37 @@ class WeekProposal(BaseModel):
     )
     trade_offs: str = Field(
         default="",
-        description="what could not be satisfied and why; empty only if nothing was sacrificed",
+        description="which muscle groups you could not get to target, and why; empty only if none",
     )
 
 
-INSTRUCTION = """You are a strength and running coach planning one week for a single person.
+class RunSession(BaseModel):
+    """A running day. Distance comes from the weekly target, never invented."""
+
+    session_date: str = Field(description="YYYY-MM-DD, must be one of the training days")
+    focus: str = Field(default="", description="short label, e.g. easy, long, intervals")
+    distance_km: float = Field(
+        description="kilometres, from the weekly running target split across the runs"
+    )
+
+
+class RunningProposal(BaseModel):
+    """What the running planner is allowed to return."""
+
+    sessions: list[RunSession]
+    rationale: str = Field(
+        description="why these days and distances, citing the running target you were given"
+    )
+    trade_offs: str = Field(
+        default="",
+        description="what the running week could not do, and why; empty only if nothing was given up",
+    )
+
+
+# --- instructions ------------------------------------------------------------
+
+STRENGTH_INSTRUCTION = """You are a strength coach planning the lifting sessions of one week
+for a single person. Another planner will add runs after you, so plan lifting only.
 
 The week you are planning starts on {week_start}.
 Days that can be trained: {training_days}
@@ -107,7 +141,10 @@ Rules you must not break:
 
 4. Only use the training days listed above. The others are unavailable.
 
-5. You may direct training. You may not direct health. Reporting that sleep
+5. Leave at least one listed training day free where you can. The running
+   planner comes after you and can only use days you have not filled.
+
+6. You may direct training. You may not direct health. Reporting that sleep
    averaged five hours is fine. Telling someone to rest, skip a session, or
    train differently because of a health signal is not something this app
    does, however reasonable it sounds.
@@ -128,48 +165,216 @@ Keep the rationale to two or three sentences, and cite the actual numbers you
 were given rather than describing them vaguely."""
 
 
+RUNNING_INSTRUCTION = """You are a running coach placing this week's runs for a single person.
+The lifting week is already fixed and you cannot change it.
+
+The week starts on {week_start}.
+Days that can be trained: {training_days}
+Active goals and targets: {goals}
+
+Lifting is already placed on these days:
+{strength_days}
+
+Recent running, for context:
+{running_summary}
+
+Your job is to place the runs the weekly running target asks for, on days that
+work around the lifting above.
+
+Rules you must not break:
+
+1. Never do arithmetic beyond splitting the weekly target distance across the
+   runs. Every other number you mention must have come from a tool result or
+   from the values above.
+
+2. If there is no running target, return no sessions at all and say so in
+   rationale. Do not invent a distance -- without a target there is nothing to
+   protect and nothing to plan toward.
+
+3. Only use the training days listed above.
+
+4. Prefer not to put a hard run the day after a heavy leg session, and prefer
+   not to stack a run on a day that already has a long lifting session. These
+   are preferences, not hard rules; if the week is tight, say so in trade_offs.
+
+5. You may direct training. You may not direct health. Reporting that sleep
+   averaged five hours is fine. Telling someone to rest, skip a run, or train
+   differently because of a health signal is not something this app does,
+   however reasonable it sounds.
+
+Runs come third in the priority order -- after volume per muscle group and
+full-body coverage, before session count. If lifting has taken the days the runs
+needed, say that in trade_offs rather than displacing lifting.
+
+Keep the rationale to two or three sentences, citing the target you were given."""
+
+
+def strength_days(state: dict[str, Any]) -> str:
+    """Which days lifting took, rendered for the running planner.
+
+    Deterministic on purpose. Templating the raw proposal dict into the prompt
+    would work, but it hands the model a wall of exercise ids to re-read when
+    all it needs is the shape of the week.
+    """
+    proposal = state.get("strength_proposal") or {}
+    sessions = proposal.get("sessions") or []
+    if not sessions:
+        return "  (no lifting sessions planned)"
+    return "\n".join(
+        f"  {session.get('session_date')}: {session.get('focus') or 'lifting'}"
+        f" ({len(session.get('exercises') or [])} exercises)"
+        for session in sessions
+    )
+
+
+def running_summary(state: dict[str, Any]) -> str:
+    """Recent runs, from the picture the context reader already gathered."""
+    runs = ((state.get("ledger_state") or {}).get("runs") or {}).get("runs") or []
+    if not runs:
+        return "  (no runs recorded recently)"
+    return "\n".join(
+        f"  {run.get('date')}: {run.get('distance_km')} km"
+        for run in runs[-5:]
+    )
+
+
+def _running_instruction(context) -> str:  # noqa: ANN001 - ADK's ReadonlyContext
+    """Render the running instruction against session state.
+
+    A callable rather than a template string because `strength_proposal` is a
+    nested dict: `{strength_proposal}` would substitute its repr, and the model
+    would spend its attention parsing that instead of placing runs.
+    """
+    state = dict(context.state)
+    return RUNNING_INSTRUCTION.format(
+        week_start=state.get("week_start", ""),
+        training_days=state.get("training_days", []),
+        goals=state.get("goals", {}),
+        strength_days=strength_days(state),
+        running_summary=running_summary(state),
+    )
+
+
+# --- merging -----------------------------------------------------------------
+
+
+def merge_proposals(
+    strength: dict[str, Any] | None, running: dict[str, Any] | None
+) -> dict[str, Any]:
+    """One week from the two planners' halves.
+
+    Structural only -- concatenate, tag each session with its kind, order by
+    date. No number is touched here; the sets are still the assembler's to
+    compute and the distances are the running planner's own.
+
+    Rationales are kept apart rather than blended, because when the two
+    disagree about what the week is for, that is worth being able to read.
+    """
+    strength = strength or {}
+    running = running or {}
+
+    sessions = [
+        {
+            "session_date": session.get("session_date"),
+            "kind": "lift",
+            "focus": session.get("focus", ""),
+            "exercises": session.get("exercises") or [],
+        }
+        for session in strength.get("sessions") or []
+    ]
+    sessions += [
+        {
+            "session_date": session.get("session_date"),
+            "kind": "run",
+            "focus": session.get("focus", ""),
+            "distance_km": session.get("distance_km"),
+        }
+        for session in running.get("sessions") or []
+    ]
+    sessions.sort(key=lambda session: (session.get("session_date") or "", session["kind"]))
+
+    return {
+        "sessions": sessions,
+        "rationale": _joined(
+            ("Lifting", strength.get("rationale")), ("Running", running.get("rationale"))
+        ),
+        "trade_offs": _joined(
+            ("Lifting", strength.get("trade_offs")), ("Running", running.get("trade_offs"))
+        ),
+    }
+
+
+def _joined(*labelled: tuple[str, str | None]) -> str:
+    parts = [f"{label}: {text.strip()}" for label, text in labelled if text and text.strip()]
+    return " ".join(parts)
+
+
+# --- wiring ------------------------------------------------------------------
+
+
 def build_coach(
     repo: SQLiteRepository, config: Config, week_start: date | None = None
 ) -> Any:
-    """The whole pipeline: read the picture, then plan against it."""
+    """The whole pipeline: read the picture, plan lifting, then place runs."""
     require_adk()
     model = configure_adk_environment(config)
 
     from google.adk.agents import LlmAgent, SequentialAgent
 
     week = week_start or next_monday()
+    tools = build_tools(repo, config)
 
-    planner = LlmAgent(
-        name="week_planner",
+    strength = LlmAgent(
+        name="strength_planner",
         model=model,
-        instruction=INSTRUCTION,
-        tools=build_tools(repo, config),
-        output_schema=WeekProposal,
-        output_key="week_proposal",
-        # Nothing to hand off to yet, and an agent that can transfer will
-        # occasionally try to.
+        instruction=STRENGTH_INSTRUCTION,
+        tools=tools,
+        output_schema=StrengthProposal,
+        output_key="strength_proposal",
+        # Sequential delegation is the whole design; an agent that can transfer
+        # will occasionally decide to run the other planner itself.
+        disallow_transfer_to_parent=True,
+        disallow_transfer_to_peers=True,
+    )
+
+    running = LlmAgent(
+        name="running_planner",
+        model=model,
+        instruction=_running_instruction,
+        # Deliberately no tools. Everything it needs -- the target, the
+        # training days, recent runs, where lifting landed -- is already in
+        # session state, and every tool it could call would re-fetch something
+        # it has been given. That is the same argument that made the context
+        # reader deterministic, applied one level down.
+        #
+        # It is also what keeps the split affordable. The free tier allows
+        # **5 requests per minute** for this model, not the ~15 the plan
+        # assumed, and each tool round trip is another request. A tool-less
+        # planner costs exactly one.
+        tools=[],
+        output_schema=RunningProposal,
+        output_key="running_proposal",
         disallow_transfer_to_parent=True,
         disallow_transfer_to_peers=True,
     )
 
     # SequentialAgent is deprecated in ADK 2.6 in favour of Workflow, but
-    # Workflow is a graph API (nodes, edges, routes) rather than a drop-in,
-    # and ADK's own note says it cannot yet be an LlmAgent sub-agent. For a
-    # two-step sequence the graph buys nothing. Revisit when the planners
-    # split and there is actually a graph to express.
+    # Workflow is a graph API (nodes, edges, routes) rather than a drop-in, and
+    # ADK's own note says it cannot yet be an LlmAgent sub-agent. This is a
+    # straight line of three steps; the graph would buy nothing.
     return SequentialAgent(
         name="coach",
-        sub_agents=[build_context_reader(repo, config, week), planner],
+        sub_agents=[build_context_reader(repo, config, week), strength, running],
     )
 
 
 async def propose_week(
     repo: SQLiteRepository, config: Config, week_start: date | None = None
 ) -> dict[str, Any]:
-    """Run the coach once and return the proposal plus its tool trace.
+    """Run the coach once and return the merged proposal plus its tool trace.
 
-    The trace is captured from day one because trajectory evaluation depends
-    on it and it cannot be reconstructed afterwards.
+    The trace is captured from day one because trajectory evaluation depends on
+    it and it cannot be reconstructed afterwards.
     """
     require_adk()
     from google.adk.runners import InMemoryRunner
@@ -189,27 +394,31 @@ async def propose_week(
         new_message=types.Content(role="user", parts=[types.Part(text="Plan next week.")]),
     ):
         for call in event.get_function_calls() or []:
-            # ADK delivers the structured output as an internal call. It is
-            # not a tool the coach chose, and counting it as one would make
-            # every trajectory look like it made an extra fetch.
+            # ADK delivers the structured output as an internal call. It is not
+            # a tool the coach chose, and counting it as one would make every
+            # trajectory look like it made an extra fetch.
             if call.name in ADK_INTERNAL_CALLS:
                 continue
-            trace.append({"tool": call.name, "args": dict(call.args or {})})
+            trace.append({"agent": event.author, "tool": call.name, "args": dict(call.args or {})})
 
     final = await runner.session_service.get_session(
         app_name="fitness-ledger-coach", user_id="local", session_id=session.id
     )
+    state = final.state
 
     return {
-        "week_start": final.state.get("week_start"),
-        "training_days": final.state.get("training_days", []),
-        "proposal": final.state.get("week_proposal"),
+        "week_start": state.get("week_start"),
+        "training_days": state.get("training_days", []),
+        "proposal": merge_proposals(
+            state.get("strength_proposal"), state.get("running_proposal")
+        ),
+        # Both halves kept as returned, so a merge bug cannot be mistaken for a
+        # planner bug when reading a stored plan back.
+        "strength_proposal": state.get("strength_proposal"),
+        "running_proposal": state.get("running_proposal"),
         "agent_trace": trace,
         # Carried out of session state rather than re-read, so the assembler
-        # allocates against the same deficit the agent was shown. Gathering it
-        # again would cost nothing in tokens but could differ, and a plan built
-        # from a different deficit than it was argued from is worse than a
-        # slow one.
-        "ledger_state": final.state.get("ledger_state", {}),
-        "exercise_pool": final.state.get("exercise_pool", []),
+        # allocates against the same deficit the agent was shown.
+        "ledger_state": state.get("ledger_state", {}),
+        "exercise_pool": state.get("exercise_pool", []),
     }
