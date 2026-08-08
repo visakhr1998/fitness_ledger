@@ -94,8 +94,28 @@ def test_the_ledger_state_carries_what_a_planner_needs(bound):
     repo, config = bound
     ledger = gather_context(repo, config)["ledger_state"]
 
-    assert set(ledger) == {"volume", "progression", "runs", "recovery", "insights"}
+    assert set(ledger) == {
+        "volume", "volume_trend", "progression", "runs", "recovery", "insights",
+    }
     assert any(m["muscle_group"] == "chest" for m in ledger["volume"]["muscles"])
+
+
+def test_the_planning_deficit_is_measured_over_one_complete_week(bound):
+    """Not four weeks, and never the current one.
+
+    Over last-4-weeks the target is scaled to four weeks, so its deficit is
+    four weeks' worth and planning against it would quadruple every session.
+    Over this-week almost nothing is logged yet, so every muscle reads as a
+    full target short -- which is what the agent actually did when left to
+    choose for itself.
+    """
+    repo, config = bound
+    ledger = gather_context(repo, config)["ledger_state"]
+
+    assert ctx_module.PLANNING_WINDOW == "last-week"
+    assert ledger["volume"] == ctx_module.gather_context(repo, config)["ledger_state"]["volume"]
+    # The trend window stays available, so a one-off can be told from a pattern.
+    assert ctx_module.TREND_WINDOW == "last-4-weeks"
 
 
 def test_goals_and_running_target_reach_the_planner(bound):
@@ -120,7 +140,9 @@ def test_context_uses_the_same_wrappers_the_agent_would_call(bound):
     tools = {t.__name__: t for t in build_tools(repo, config)}
     state = gather_context(repo, config)
 
-    assert state["ledger_state"]["volume"] == tools["get_volume_vs_target"]("last-4-weeks")
+    assert state["ledger_state"]["volume"] == tools["get_volume_vs_target"](
+        ctx_module.PLANNING_WINDOW
+    )
     assert state["exercise_pool"] == tools["get_exercise_pool"]()
 
 

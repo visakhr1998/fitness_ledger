@@ -27,10 +27,20 @@ from ..config import Config
 from ..db import SQLiteRepository
 from .tools import build_tools
 
-# The window the planners reason over. Four complete weeks is the same
-# baseline the insight rules use, so the coach and the insight cards cannot
-# disagree about whether something is a shortfall.
-LEDGER_WINDOW = "last-4-weeks"
+# One complete week is what a one-week plan is measured against: over
+# `last-4-weeks` the target is scaled to four weeks, so its deficit is four
+# weeks' worth and planning against it would quadruple every session.
+#
+# Left to itself the agent picked `this-week` -- a barely-started week, where
+# almost nothing is logged yet and every muscle reads as a full target short.
+# It then planned against that fabricated shortfall. So the window is chosen
+# here, not there.
+PLANNING_WINDOW = "last-week"
+
+# Four complete weeks is the baseline the insight rules use, kept alongside so
+# the coach can tell a one-off from a pattern without disagreeing with the
+# insight cards about which is which.
+TREND_WINDOW = "last-4-weeks"
 RUN_WINDOW = "last-4-weeks"
 RECOVERY_WINDOW = "last-2-weeks"
 
@@ -70,7 +80,8 @@ def gather_context(
         "week_start": week.isoformat(),
         "goals": tools["get_goals"](),
         "ledger_state": {
-            "volume": tools["get_volume_vs_target"](LEDGER_WINDOW),
+            "volume": tools["get_volume_vs_target"](PLANNING_WINDOW),
+            "volume_trend": tools["get_volume_vs_target"](TREND_WINDOW),
             "progression": tools["get_progression_state"](),
             "runs": tools["get_recent_runs"](RUN_WINDOW),
             "recovery": tools["get_recovery_signals"](RECOVERY_WINDOW),
@@ -80,6 +91,32 @@ def gather_context(
         "exercise_pool": tools["get_exercise_pool"](),
         "previous_plan": tools["get_previous_plan"](),
     }
+
+
+def deficit_summary(context: dict[str, Any]) -> str:
+    """The weekly shortfall, rendered for the instruction.
+
+    Rendering, not computing: every figure here came from the volume tool. It
+    exists so the agent is *given* the deficit rather than choosing a window
+    and deriving one -- which is how it ended up planning against a
+    barely-started week.
+    """
+    muscles = context["ledger_state"]["volume"]["muscles"]
+    short = sorted(
+        (m for m in muscles if (m["sets_deficit"] or 0) > 0),
+        key=lambda m: m["sets_deficit"],
+        reverse=True,
+    )
+    if not short:
+        return "No muscle group is below target. Plan for progression, not more volume."
+
+    lines = [
+        f"{m['muscle_group']}: {m['effective_sets']:g} of {m['target_sets']:g} sets"
+        f" (short {m['sets_deficit']:g}), trained {m['frequency']} of"
+        f" {m['target_frequency']} days"
+        for m in short
+    ]
+    return "\n".join(lines)
 
 
 def training_days(context: dict[str, Any]) -> list[str]:
@@ -117,6 +154,7 @@ def build_context_reader(repo: SQLiteRepository, config: Config, week_start: dat
         async def _run_async_impl(self, ctx):  # noqa: ANN001 - ADK's signature
             state = gather_context(repo, config, week_start)
             state["training_days"] = training_days(state)
+            state["deficit_summary"] = deficit_summary(state)
             yield Event(
                 author=self.name,
                 actions=EventActions(state_delta=state),
