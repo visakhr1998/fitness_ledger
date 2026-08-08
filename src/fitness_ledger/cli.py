@@ -27,7 +27,7 @@ from .queries import (
     volume_report,
     volume_trend,
 )
-from .sync import sync_exercise_points, sync_health_daily, sync_hevy
+from .sync import sync_all
 from .volume import default_targets
 
 
@@ -70,31 +70,29 @@ async def cmd_doctor(config: Config, args: argparse.Namespace) -> int:
     return 0 if ok else 1
 
 
+def _print_sync_step(name: str, detail: object) -> None:
+    """Print whatever a step returned, without knowing what it returns.
+
+    Deliberately generic: the previous version unpacked each step's keys by
+    hand, which is why adding a step to the API left the CLI behind.
+    """
+    print(f"{name}:")
+    if isinstance(detail, dict):
+        for key, value in detail.items():
+            print(f"  {str(key).replace('_', ' ')}: {value}")
+    else:
+        print(f"  {detail}")
+
+
 async def cmd_sync(config: Config, args: argparse.Namespace) -> int:
     with open_repo(config) as repo:
         if not repo.get_targets():
             repo.set_targets(default_targets().values())
             print("Seeded default volume targets.")
 
-        print("Syncing Hevy...")
-        async with hevy_client(config) as hevy:
-            result = await sync_hevy(hevy, repo, full=args.full)
-        print(f"  mode: {result['mode']}")
-        print(f"  exercise templates: {result['templates']}")
-        if result["mode"] == "backfill":
-            print(f"  workouts fetched: {result['workouts']}")
-        else:
-            print(f"  workouts updated: {result['updated']}, deleted: {result['deleted']}")
-        print(f"  workouts cached: {result['total_workouts']}")
-
-        since = date.today() - timedelta(weeks=args.weeks)
-        print(f"Syncing Google Health since {since.isoformat()}...")
-        async with health_client(config) as health:
-            points = await sync_exercise_points(health, repo, since)
-            daily = await sync_health_daily(health, repo, since, date.today() + timedelta(days=1))
-        print(f"  exercise data points: {points}")
-        for metric, count in daily.items():
-            print(f"  {metric}: {count} rows")
+        await sync_all(
+            config, repo, weeks=args.weeks, full=args.full, on_step=_print_sync_step
+        )
     return 0
 
 
