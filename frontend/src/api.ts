@@ -139,6 +139,17 @@ export type Insight = {
   data: Record<string, unknown>;
 };
 
+/** Findings plus the scope they were found over.
+ *
+ *  The rules obey neither the section tabs nor the time-horizon filter, so the
+ *  window comes from the backend rather than being named again here.
+ */
+export type InsightReport = {
+  window: string;
+  weeks: number;
+  insights: Insight[];
+};
+
 export type SyncStatus = {
   status: "idle" | "running" | "done" | "error";
   steps: { name: string; detail: unknown }[];
@@ -176,7 +187,7 @@ export const api = {
   run: (range: Range) => get<RunSection>(`/api/run${qs(range)}`),
   gym: (range: Range) => get<GymSection>(`/api/gym${qs(range)}`),
   vitals: () => get<Vitals>("/api/vitals"),
-  insights: () => get<Insight[]>("/api/insights"),
+  insights: () => get<InsightReport>("/api/insights"),
   exercises: (onlyLogged = true) =>
     get<ExerciseSummary[]>(`/api/exercises?only_logged=${onlyLogged}`),
   exercise: (id: string, range: Range) =>

@@ -6,7 +6,7 @@
  */
 
 import { useEffect, useState } from "react";
-import { api, type Insight } from "../api";
+import { api, type Insight, type InsightReport } from "../api";
 import { CoachMascot } from "./ExerciseIcon";
 
 const RULE_LABELS: Record<string, string> = {
@@ -18,13 +18,14 @@ const RULE_LABELS: Record<string, string> = {
 };
 
 export function CoachStrip({ reloadKey }: { reloadKey: number }) {
-  const [insights, setInsights] = useState<Insight[]>([]);
+  const [report, setReport] = useState<InsightReport | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
 
   useEffect(() => {
-    api.insights().then(setInsights).catch(() => setInsights([]));
+    api.insights().then(setReport).catch(() => setReport(null));
   }, [reloadKey]);
 
+  const insights: Insight[] = report?.insights ?? [];
   if (insights.length === 0) return null;
 
   // Group by rule: four identical coverage gaps are one finding, not four.
@@ -47,8 +48,15 @@ export function CoachStrip({ reloadKey }: { reloadKey: number }) {
         <CoachMascot />
         <div style={{ flex: "1 1 auto", minWidth: 0 }}>
           <h2 style={{ margin: 0, fontSize: 15, fontWeight: 500 }}>What I noticed</h2>
+          {/* Say what this actually covers. The rules read a fixed span and know
+              nothing about the section tabs or the filter above, so the panel
+              looked broken -- identical on Run and Gym, unmoved by the filter --
+              when it was only ever unlabelled. The window comes from the
+              backend so the two cannot drift apart. */}
           <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 2 }}>
-            Observations from your own history. Nothing here changes your training.
+            All training, {report?.window ?? `last ${report?.weeks ?? 12} weeks`} — this
+            panel is not scoped by the section or the filter above. Nothing here changes
+            your training.
           </div>
 
           <div className="coach-list" style={{ display: "grid", gap: 8, marginTop: 12 }}>

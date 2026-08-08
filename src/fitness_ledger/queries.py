@@ -393,11 +393,30 @@ def progression_report(
     return rows
 
 
+INSIGHT_LOOKBACK_WEEKS = 12
+
+
+def insight_window(today: date | None = None) -> tuple[date, date]:
+    """The span the detection rules read from.
+
+    Deliberately **not** the dashboard's time-horizon filter. Each rule defines
+    its own window inside this span -- volume_drop compares complete weeks,
+    coverage_gap uses eight, recovery_flag a week against a four-week baseline --
+    and squeezing them into a seven-day filter would silence them rather than
+    rescope them: a rule evaluated against one part-finished week fires on
+    nothing. That is the two window vocabularies rule in CLAUDE.md.
+
+    Exported so the UI can state the scope it is actually showing instead of
+    naming a period of its own and drifting from this one.
+    """
+    today = today or date.today()
+    return today - timedelta(weeks=INSIGHT_LOOKBACK_WEEKS), today + timedelta(days=1)
+
+
 def insight_report(repo: SQLiteRepository, config: Config) -> list[dict[str, Any]]:
     """Run every detection rule against the cache."""
     today = date.today()
-    start = today - timedelta(weeks=12)
-    end = today + timedelta(days=1)
+    start, end = insight_window(today)
     default = RepRange(config.rep_range_low, config.rep_range_high)
     overrides = rep_ranges(repo, config)
 
