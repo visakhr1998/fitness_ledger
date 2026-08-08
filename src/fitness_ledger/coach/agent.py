@@ -6,8 +6,9 @@ Two planners behind the context reader, run in order:
 
 **Sequential, not parallel.** Running placement depends on strength placement --
 you cannot decide where an easy run fits without knowing which day squats landed
-on -- and parallel sub-agents multiply requests per turn. On a free tier of
-~15 RPM that is the difference between working and 429s.
+on -- and parallel sub-agents multiply requests per turn. Measured, the free tier
+allows 5 requests a minute and 20 a day on `gemini-3.5-flash`, so that is the
+difference between working and 429s.
 
 The split is not just tidiness. One agent holding the whole week had to weigh
 lifting deficits and running targets in a single pass, and running lost every
@@ -336,6 +337,15 @@ def _joined(*labelled: tuple[str, str | None]) -> str:
 # --- wiring ------------------------------------------------------------------
 
 
+# Planning is a judgement call, but an *evaluable* one. At default temperature
+# the same ledger yields a different week each run, which is fine to read and
+# useless to grade: a failing assertion could mean the prompt regressed or the
+# sampler wandered, and there is no way to tell those apart. Zero does not make
+# the model correct, only repeatable -- and a flaky eval is worse than none,
+# because it teaches you to ignore failures.
+PLANNER_TEMPERATURE = 0.0
+
+
 def build_coach(
     repo: SQLiteRepository, config: Config, week_start: date | None = None
 ) -> Any:
@@ -344,15 +354,18 @@ def build_coach(
     model = configure_adk_environment(config)
 
     from google.adk.agents import LlmAgent, SequentialAgent
+    from google.genai import types
 
     week = week_start or next_monday()
     tools = build_tools(repo, config)
+    sampling = types.GenerateContentConfig(temperature=PLANNER_TEMPERATURE)
 
     strength = LlmAgent(
         name="strength_planner",
         model=model,
         instruction=STRENGTH_INSTRUCTION,
         tools=tools,
+        generate_content_config=sampling,
         output_schema=StrengthProposal,
         output_key="strength_proposal",
         # Sequential delegation is the whole design; an agent that can transfer
@@ -376,6 +389,7 @@ def build_coach(
         # assumed, and each tool round trip is another request. A tool-less
         # planner costs exactly one.
         tools=[],
+        generate_content_config=sampling,
         output_schema=RunningProposal,
         output_key="running_proposal",
         disallow_transfer_to_parent=True,
