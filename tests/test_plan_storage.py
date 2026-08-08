@@ -104,14 +104,14 @@ def test_an_unknown_status_is_refused(repo):
 
 
 def test_preferences_default_when_nothing_is_set(repo):
-    assert assembler.preferences(repo) == Preferences()
+    assert assembler.planning_preferences(repo) == Preferences()
 
 
 def test_preferences_come_from_settings(repo):
     repo.set_setting("max_sets_per_session", "16")
     repo.set_setting("allow_run_after_leg_day", "false")
 
-    prefs = assembler.preferences(repo)
+    prefs = assembler.planning_preferences(repo)
 
     assert prefs.max_sets_per_session == 16
     assert prefs.allow_run_after_leg_day is False
@@ -121,7 +121,7 @@ def test_a_malformed_preference_falls_back_rather_than_crashing(repo):
     """A bad setting should give a safe week, not no week."""
     repo.set_setting("max_sets_per_session", "lots")
 
-    assert assembler.preferences(repo).max_sets_per_session == Preferences().max_sets_per_session
+    assert assembler.planning_preferences(repo).max_sets_per_session == Preferences().max_sets_per_session
 
 
 # --- assembly ---------------------------------------------------------------
@@ -198,3 +198,56 @@ def test_only_positive_deficits_drive_allocation(repo):
     """A muscle at or above target is not short, and planning against it would
     invent volume."""
     assert "lats" not in assembler.deficits(a_result()["ledger_state"])
+
+
+# --- the read path ----------------------------------------------------------
+
+
+def test_the_week_view_says_so_when_nothing_is_planned(repo):
+    from fitness_ledger.config import Config
+    from fitness_ledger.sections import plan_section
+
+    view = plan_section(repo, Config.load())
+
+    assert view["available"] is False
+    assert view["plan"] is None
+    assert view["problems"] == []
+
+
+def test_the_week_view_carries_the_plan_and_its_adherence(repo):
+    from fitness_ledger.config import Config
+    from fitness_ledger.sections import plan_section
+
+    repo.add_plan(a_plan())
+    view = plan_section(repo, Config.load())
+
+    assert view["available"] is True
+    assert view["plan"]["week_start"] == WEEK.isoformat()
+    assert view["plan"]["total_sets"] == 4
+    assert view["adherence"]["sessions_ahead"] >= 0
+
+
+def test_problems_are_recomputed_not_stored(repo):
+    """They are a function of the plan and the *current* preferences, so a
+    stored verdict would go stale the moment a preference changed."""
+    from fitness_ledger.config import Config
+    from fitness_ledger.sections import plan_section
+
+    repo.add_plan(a_plan())
+    assert plan_section(repo, Config.load())["problems"] == []
+
+    # Tighten the ceiling under the stored plan; the view must notice.
+    repo.set_setting("max_sets_per_session", "2")
+    problems = plan_section(repo, Config.load())["problems"]
+
+    assert any("over the 2 allowed in a session" in p for p in problems)
+
+
+def test_a_week_with_no_plan_of_its_own_is_not_silently_another_weeks(repo):
+    from fitness_ledger.config import Config
+    from fitness_ledger.sections import plan_section
+
+    repo.add_plan(a_plan())
+    view = plan_section(repo, Config.load(), "2026-09-07")
+
+    assert view["available"] is False

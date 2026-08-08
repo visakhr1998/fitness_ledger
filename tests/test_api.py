@@ -182,3 +182,20 @@ def test_index_serves_the_dashboard(client):
     res = client.get("/")
     assert res.status_code == 200
     assert "Fitness ledger" in res.text
+
+
+def test_the_plan_endpoint_is_not_scoped_by_the_filter(client):
+    """A plan is one specific week, so the time-horizon filter has nothing to
+    say about it -- passing one must not change the answer."""
+    plain = client.get("/api/plan").json()
+    filtered = client.get("/api/plan", params={"window": "last-7-days"}).json()
+
+    assert plain == filtered
+    assert set(plain) == {"available", "reason", "plan", "problems", "adherence"}
+
+
+def test_a_malformed_week_is_a_400_not_a_500(client):
+    res = client.get("/api/plan", params={"week": "next tuesday"})
+
+    assert res.status_code == 400
+    assert "YYYY-MM-DD" in res.json()["detail"]

@@ -77,7 +77,16 @@ const GymGlyph = () => (
   </svg>
 );
 
-export type Section = "run" | "gym";
+/** A calendar week: seven columns, the first one marked. */
+const WeekGlyph = () => (
+  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden>
+    <rect x="3" y="5" width="18" height="16" rx="2.5" stroke="currentColor" strokeWidth="1.8" />
+    <path d="M3 10h18M8 3v4M16 3v4" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+    <rect x="6.5" y="13" width="3" height="3" rx="1" fill="currentColor" />
+  </svg>
+);
+
+export type Section = "run" | "gym" | "week";
 
 export function SectionTabs({
   active, onChange,
@@ -85,6 +94,7 @@ export function SectionTabs({
   const tabs: { id: Section; label: string; glyph: ReactNode }[] = [
     { id: "run", label: "Run", glyph: <RunGlyph /> },
     { id: "gym", label: "Gym", glyph: <GymGlyph /> },
+    { id: "week", label: "Week", glyph: <WeekGlyph /> },
   ];
   return (
     <nav style={{ display: "flex", gap: 8 }} aria-label="Section">
