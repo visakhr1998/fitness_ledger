@@ -54,7 +54,9 @@ API ─┘        │              (rules engine: pure, tested, no I/O)
   take dataclasses and return dataclasses. No DB, no network, no model. Every
   number must be testable without I/O. Do not import `db` or `mcp_client` there.
 - **The model never computes.** `chat.py` exposes query functions as tools and
-  the system prompt forbids arithmetic. Never let an LLM do the maths.
+  the system prompt forbids arithmetic. Never let an LLM do the maths. The coach
+  is the hardest case: `planning.py` allocates its set counts and is pure, so it
+  sits with the rules engine rather than in `coach/`, which imports the database.
 - **Only `sync.py` talks to the MCP servers.** Everything else reads the cache.
 - **The API is a thin wrapper over `queries.py`.** No computation in `api.py`, so
   the API and CLI can never disagree about a number.
@@ -176,7 +178,7 @@ Two rules, both learned the hard way:
 ## Working here
 
 ```bash
-./.venv/Scripts/python.exe -m pytest              # 290 tests, keep them green
+./.venv/Scripts/python.exe -m pytest              # 358 tests, keep them green
 cd frontend && npm run build                      # required after any frontend change
 ./.venv/Scripts/python.exe -m fitness_ledger.cli doctor
 ./.venv/Scripts/python.exe -m fitness_ledger.cli sync
@@ -223,9 +225,21 @@ Expectations for changes:
 - **Write-back must stay approval-gated.** propose → diff → confirm → write →
   log. The propose step never calls Hevy. **Hevy has no delete endpoint**, so an
   accidental write can only be undone by hand in the app; never remove the diff.
-- **Don't implement the `drift` insight rule.** It compares logged sessions
-  against *planned* ones, and Plan/Availability still do not exist.
-- **Don't add ADK yet.** A chat call with tools is a direct model call.
+- **The `drift` insight rule is unblocked but not written.** It compares logged
+  sessions against *planned* ones, which needed `Plan` and `Availability` to
+  exist. Both now do, so the blocker is gone — the rule itself is still to do.
+- **ADK is in, for the coach only.** The earlier "don't add ADK yet" line was
+  written about `chat.py`, whose 48-line stateless loop genuinely does not need
+  a harness, and that is still true — `chat.py` is untouched and stays that way.
+  The coach is a different problem: multi-agent delegation, session state and
+  week-over-week continuity a stateless call cannot express. It is an **optional
+  extra** (`pip install -e ".[coach]"`), so nothing else depends on its 25
+  dependencies, and the dashboard must keep working without it.
+- **The agent never emits a set count.** It chooses exercises and days;
+  `planning.py` computes every number from the tool-reported deficit. This is
+  enforced by shape, not by instruction — `WeekProposal` has nowhere to put a
+  set count, rep count or weight. Do not add one, and do not let the assembler
+  accept a number the agent supplied.
 - **The chat dock needs *a* model provider, not a specific one.** Gemini's free
   tier is the default; `ollama` runs it locally. Without any provider the dock
   says so; the rest of the dashboard must never depend on one.

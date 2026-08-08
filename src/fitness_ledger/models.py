@@ -271,3 +271,133 @@ class VolumeRollup:
         return sorted(
             self.muscles.values(), key=lambda m: m.effective_sets, reverse=True
         )
+
+
+# --- what the coach produces ------------------------------------------------
+
+PLAN_STATUSES = frozenset({"proposed", "approved", "superseded", "rejected"})
+SESSION_KINDS = frozenset({"lift", "run"})
+
+
+@dataclass(frozen=True)
+class PlannedExercise:
+    """One exercise in a planned session, with its set count.
+
+    The agent's own output type carries no set count -- it has nowhere to put
+    one, on purpose. This is the assembled side: the number here was computed
+    from the tool-reported deficit, never proposed by a model.
+    """
+
+    exercise_template_id: str
+    title: str
+    sets: int
+    targets: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.sets < 1:
+            raise ValueError(
+                f"{self.title!r} planned with {self.sets} sets; an exercise with no "
+                "sets should be dropped from the session instead"
+            )
+
+    def as_dict(self) -> dict:
+        return {
+            "exercise_template_id": self.exercise_template_id,
+            "title": self.title,
+            "sets": self.sets,
+            "targets": list(self.targets),
+        }
+
+
+@dataclass(frozen=True)
+class PlannedSession:
+    """One day of the planned week."""
+
+    local_date: date
+    kind: str
+    focus: str = ""
+    exercises: tuple[PlannedExercise, ...] = ()
+    distance_km: float | None = None
+
+    def __post_init__(self) -> None:
+        if self.kind not in SESSION_KINDS:
+            raise ValueError(
+                f"unknown session kind {self.kind!r}; expected one of {sorted(SESSION_KINDS)}"
+            )
+
+    @property
+    def total_sets(self) -> int:
+        return sum(exercise.sets for exercise in self.exercises)
+
+    @property
+    def muscles(self) -> frozenset[str]:
+        return frozenset(
+            muscle for exercise in self.exercises for muscle in exercise.targets
+        )
+
+    def as_dict(self) -> dict:
+        return {
+            "date": self.local_date.isoformat(),
+            "kind": self.kind,
+            "focus": self.focus,
+            "exercises": [exercise.as_dict() for exercise in self.exercises],
+            "distance_km": self.distance_km,
+            "total_sets": self.total_sets,
+        }
+
+
+@dataclass(frozen=True)
+class Plan:
+    """One proposed training week. Append-only.
+
+    A revision is a new row that `supersedes` the old one, never an edit: the
+    reason a week looked the way it did is part of the record, and the coach
+    reads the previous plan to tell a new shortfall from a persistent one.
+
+    `trade_offs` is its own field rather than prose buried in `rationale`,
+    because when the week is squeezed something loses and that should be
+    readable at a glance. `agent_trace` is stored from the first plan onward --
+    it cannot be reconstructed afterwards and the trajectory eval needs it.
+    """
+
+    week_start: date
+    sessions: tuple[PlannedSession, ...] = ()
+    rationale: str = ""
+    trade_offs: str = ""
+    status: str = "proposed"
+    supersedes: int | None = None
+    agent_trace: tuple[dict, ...] = ()
+    id: int | None = None
+    generated_at: datetime | None = None
+
+    def __post_init__(self) -> None:
+        if self.status not in PLAN_STATUSES:
+            raise ValueError(
+                f"unknown plan status {self.status!r}; expected one of {sorted(PLAN_STATUSES)}"
+            )
+
+    @property
+    def total_sets(self) -> int:
+        return sum(session.total_sets for session in self.sessions)
+
+    @property
+    def lift_sessions(self) -> tuple[PlannedSession, ...]:
+        return tuple(s for s in self.sessions if s.kind == "lift")
+
+    @property
+    def run_sessions(self) -> tuple[PlannedSession, ...]:
+        return tuple(s for s in self.sessions if s.kind == "run")
+
+    def as_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "week_start": self.week_start.isoformat(),
+            "generated_at": self.generated_at.isoformat() if self.generated_at else None,
+            "status": self.status,
+            "supersedes": self.supersedes,
+            "rationale": self.rationale,
+            "trade_offs": self.trade_offs,
+            "sessions": [session.as_dict() for session in self.sessions],
+            "total_sets": self.total_sets,
+            "agent_trace": list(self.agent_trace),
+        }

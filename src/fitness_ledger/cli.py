@@ -338,12 +338,17 @@ def cmd_unavailable(config: Config, args: argparse.Namespace) -> int:
 
 
 async def cmd_plan(config: Config, args: argparse.Namespace) -> int:
-    """Propose a week. Nothing is written anywhere -- this only prints."""
+    """Propose a week, allocate its sets, and store it.
+
+    Nothing reaches Hevy from here: an approved plan still goes through the
+    gated propose -> diff -> confirm -> write flow.
+    """
     from .coach import CoachUnavailable
 
     with open_repo(config) as repo:
         try:
             from .coach.agent import propose_week
+            from .coach.assembler import assemble
 
             week = date.fromisoformat(args.week) if args.week else None
             result = await propose_week(repo, config, week)
@@ -351,32 +356,56 @@ async def cmd_plan(config: Config, args: argparse.Namespace) -> int:
             print(exc)
             return 1
 
-    proposal = result["proposal"]
-    if not proposal:
-        print("The coach returned no proposal.")
-        return 1
+        if not result.get("proposal"):
+            print("The coach returned no proposal.")
+            return 1
 
-    print(f"Proposed week of {result['week_start']}\n")
-    for session in proposal["sessions"]:
-        label = session.get("focus") or session["kind"]
-        print(f"  {session['session_date']}  {label}")
-        for exercise in session.get("exercises") or []:
-            targets = ", ".join(exercise.get("targets") or []) or "-"
-            print(f"      {exercise['title']:<34} {targets}")
-        if session.get("distance_km"):
-            print(f"      {session['distance_km']:g} km")
+        assembled = assemble(repo, config, result, persist=not args.dry_run)
 
-    print(f"\n  why: {proposal['rationale']}")
-    if proposal.get("trade_offs"):
-        print(f"  gave up: {proposal['trade_offs']}")
+    plan = assembled["plan"]
+    if args.json:
+        print(json.dumps(plan.as_dict(), indent=2))
+        return 0
+
+    stored = f"plan {plan.id}" if plan.id else "not stored"
+    print(f"Week of {plan.week_start} -- {plan.total_sets} sets ({stored})")
+    print()
+    for session in plan.sessions:
+        label = session.focus or session.kind
+        head = f"  {session.local_date}  {label}"
+        if session.kind == "lift":
+            head += f"  [{session.total_sets} sets]"
+        print(head)
+        for exercise in session.exercises:
+            targets = ", ".join(exercise.targets) or "-"
+            print(f"      {exercise.sets} x {exercise.title:<30} {targets}")
+        if session.distance_km:
+            print(f"      {session.distance_km:g} km")
+
+    print()
+    print(f"  why: {plan.rationale}")
+    if plan.trade_offs:
+        print(f"  gave up: {plan.trade_offs}")
+
+    # Constraint failures are shown next to the plan rather than instead of it:
+    # a week that breaks one is still the most useful thing to look at while
+    # deciding what to do about it.
+    if assembled["problems"]:
+        print()
+        print("  constraints not met:")
+        for problem in assembled["problems"]:
+            print(f"    - {problem}")
+
     if args.trace:
-        print("\n  tools called:")
+        print()
+        print("  tools called:")
         for step in result["agent_trace"]:
             print(f"    {step['tool']}({step['args']})")
+        if not result["agent_trace"]:
+            print("    (none -- the context reader had already supplied everything)")
 
-    # Set counts and weights are deliberately absent: they are computed from
-    # the deficit, not chosen by the model. That lands with the assembler.
-    print("\n  (proposal only -- no sets, no weights, nothing written)")
+    print()
+    print("  (proposed only -- nothing written to Hevy)")
     return 0
 
 
@@ -542,6 +571,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_unavailable.add_argument("--clear", action="store_true", help="hand the day back")
 
     p_plan = sub.add_parser("plan", help="propose a training week (needs the coach extra)")
+    p_plan.add_argument(
+        "--dry-run", action="store_true", help="do not store the plan"
+    )
     p_plan.add_argument("--week", metavar="YYYY-MM-DD", help="Monday to plan; default next week")
     p_plan.add_argument("--trace", action="store_true", help="show the tool calls the coach made")
 

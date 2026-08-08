@@ -192,11 +192,38 @@ def build_tools(repo: SQLiteRepository, config: Config) -> list[Callable[..., An
         Use it for continuity -- whether a shortfall is new or has persisted --
         and to avoid repeating a suggestion that was already declined.
         """
-        # Wired to the plans table when the Plan entity lands. Until then the
-        # honest answer is the same one the first-ever week will give.
+        # The most recent plan of any week. When replanning a week that already
+        # has one -- after a day is declared lost -- that is the superseded plan
+        # for this same week, which is the right thing to reference. Telling
+        # "last week's plan" from "this week's earlier attempt" is day 7's job,
+        # along with matching it against what was actually trained.
+        plan = repo.latest_plan()
+        if plan is None:
+            return {
+                "available": False,
+                "reason": "no previous plan has been generated yet",
+            }
         return {
-            "available": False,
-            "reason": "no previous plan has been generated yet",
+            "available": True,
+            "week_start": plan.week_start.isoformat(),
+            "status": plan.status,
+            "rationale": plan.rationale,
+            "trade_offs": plan.trade_offs,
+            # Sessions trimmed to what continuity needs: which days held what,
+            # and how much. The full record stays in the plans table.
+            "sessions": [
+                {
+                    "date": session.local_date.isoformat(),
+                    "kind": session.kind,
+                    "focus": session.focus,
+                    "exercises": [
+                        {"title": exercise.title, "sets": exercise.sets}
+                        for exercise in session.exercises
+                    ],
+                    "distance_km": session.distance_km,
+                }
+                for session in plan.sessions
+            ],
         }
 
     return [
