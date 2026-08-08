@@ -93,6 +93,45 @@ def gather_context(
     }
 
 
+def continuity_summary(context: dict[str, Any]) -> str:
+    """Last week's plan and what became of it, rendered for the instruction.
+
+    This is what makes the coach a coach rather than a week generator: *"back is
+    still short, third week"* needs to know what was said last time and whether
+    it was followed. Without it every week is argued from scratch, and a
+    shortfall that has survived three plans reads exactly like a new one.
+
+    Rendered here, deterministically, for the same reason the deficit is: the
+    agent should be handed the comparison rather than fetch two things and work
+    out the relationship itself.
+    """
+    previous = context.get("previous_plan") or {}
+    if not previous.get("available"):
+        return "No previous plan. This is the first week being planned."
+
+    followed = previous.get("followed") or {}
+    lines = [
+        f"Last plan was for the week of {previous.get('week_start')}"
+        f" ({previous.get('status', 'proposed')})."
+    ]
+    if followed.get("not_started"):
+        # A plan for a week that has not begun says nothing about adherence,
+        # and reporting "0 of 6 trained" would have the planner writing around
+        # a failure that never happened.
+        lines.append("That week has not started, so there is nothing to judge yet.")
+    elif followed:
+        lines.append(
+            f"{followed.get('sessions_completed', 0)} of"
+            f" {followed.get('sessions_planned', 0)} of its sessions had logged training."
+        )
+        missed = followed.get("missed_days") or []
+        if missed:
+            lines.append(f"Nothing was logged on: {', '.join(missed)}.")
+    if previous.get("trade_offs"):
+        lines.append(f"It gave up: {previous['trade_offs']}")
+    return " ".join(lines)
+
+
 def deficit_summary(context: dict[str, Any]) -> str:
     """The weekly shortfall, rendered for the instruction.
 
@@ -155,6 +194,7 @@ def build_context_reader(repo: SQLiteRepository, config: Config, week_start: dat
             state = gather_context(repo, config, week_start)
             state["training_days"] = training_days(state)
             state["deficit_summary"] = deficit_summary(state)
+            state["continuity_summary"] = continuity_summary(state)
             yield Event(
                 author=self.name,
                 actions=EventActions(state_delta=state),

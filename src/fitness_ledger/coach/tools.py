@@ -206,12 +206,25 @@ def build_tools(repo: SQLiteRepository, config: Config) -> list[Callable[..., An
                 "available": False,
                 "reason": "no previous plan has been generated yet",
             }
+        from .assembler import plan_adherence
+
+        followed = plan_adherence(repo, plan)
         return {
             "available": True,
             "week_start": plan.week_start.isoformat(),
             "status": plan.status,
             "rationale": plan.rationale,
             "trade_offs": plan.trade_offs,
+            # What happened to it, not just what it said. A shortfall that
+            # survived a week the user trained in full means something
+            # different from one that survived a week they missed.
+            "followed": {
+                "not_started": followed.not_started,
+                "sessions_planned": followed.planned,
+                "sessions_completed": followed.completed,
+                "missed_days": [day.isoformat() for day in followed.missed],
+                "sessions_ahead": len(followed.pending),
+            },
             # Sessions trimmed to what continuity needs: which days held what,
             # and how much. The full record stays in the plans table.
             "sessions": [

@@ -132,6 +132,9 @@ Active goals and targets: {goals}
 Last complete week, against the weekly target:
 {deficit_summary}
 
+Continuity -- what you said last time, and what became of it:
+{continuity_summary}
+
 That shortfall is what this week has to close. It is already measured over one
 complete week, so do not call get_volume_vs_target to recompute it and do not
 pick your own window -- a part-finished week reads as a full target short and
@@ -159,7 +162,13 @@ Rules you must not break:
 5. Leave at least one listed training day free where you can. The running
    planner comes after you and can only use days you have not filled.
 
-6. You may direct training. You may not direct health. Reporting that sleep
+6. If a shortfall also appears in the continuity note above, say so in the
+   rationale -- a muscle short for a third week is a different situation from
+   one short for the first time, and the plan should read like it knows that.
+   Do not reproach anyone for a missed session; report what happened and plan
+   around it.
+
+7. You may direct training. You may not direct health. Reporting that sleep
    averaged five hours is fine. Telling someone to rest, skip a session, or
    train differently because of a health signal is not something this app
    does, however reasonable it sounds.

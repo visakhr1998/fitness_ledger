@@ -314,3 +314,159 @@ def _run_adjacency_violations(
         for s in sessions
         if s.kind == "run" and (s.local_date.toordinal() - 1) in {d.toordinal() for d in leg_days}
     ]
+
+
+# --- did last week's plan actually happen? -----------------------------------
+
+
+@dataclass(frozen=True)
+class SessionOutcome:
+    """One planned session, against what was logged that day."""
+
+    local_date: date
+    kind: str
+    planned_sets: int
+    logged_sets: int
+    missing: tuple[str, ...] = ()  # planned exercises with nothing logged
+
+    @property
+    def completed(self) -> bool:
+        """Anything at all logged on the day. Deliberately generous: a session
+        done differently is still a session done, and calling it a miss would
+        make the coach nag about a week that went fine."""
+        return self.logged_sets > 0
+
+
+@dataclass(frozen=True)
+class Adherence:
+    """How much of a plan was trained.
+
+    Compared at the level the plan speaks in -- sessions and exercises -- and
+    not in effective sets. A planned set and an effective set are different
+    units: the plan counts a set once per exercise, while the volume engine
+    credits a secondary muscle at half. Reporting a ratio across the two would
+    read as precision that is not there.
+
+    **Only days that have passed are judged.** A session still in the future is
+    neither done nor missed, and counting it as missed makes an unstarted week
+    look abandoned -- which matters because this goes to a model that is about
+    to plan the next one.
+    """
+
+    week_start: date
+    sessions: tuple[SessionOutcome, ...] = ()
+    pending: tuple[date, ...] = ()
+
+    @property
+    def planned(self) -> int:
+        """Sessions whose day has passed. The ones still ahead are in `pending`."""
+        return len(self.sessions)
+
+    @property
+    def completed(self) -> int:
+        return sum(1 for session in self.sessions if session.completed)
+
+    @property
+    def missed(self) -> tuple[date, ...]:
+        return tuple(s.local_date for s in self.sessions if not s.completed)
+
+    @property
+    def not_started(self) -> bool:
+        """The whole week is still ahead, so there is nothing to judge yet."""
+        return not self.sessions and bool(self.pending)
+
+    @property
+    def planned_sets(self) -> int:
+        return sum(session.planned_sets for session in self.sessions)
+
+    @property
+    def logged_sets(self) -> int:
+        return sum(session.logged_sets for session in self.sessions)
+
+
+def adherence(
+    sessions: tuple[PlannedSession, ...],
+    logged_by_day: dict[date, dict[str, int]],
+    run_days: set[date] | None = None,
+    today: date | None = None,
+) -> Adherence:
+    """Match a plan against what was logged.
+
+    `logged_by_day` maps a date to the working sets logged per exercise
+    template that day. `run_days` are days with a logged run. Both come from
+    the cache; nothing here reads a repository.
+
+    Sessions dated today or later are set aside as pending rather than judged.
+    Plans are written for a week that has not started, so without this the
+    freshly-stored plan reads as a week in which everything was skipped.
+    """
+    runs = run_days or set()
+    cutoff = today or date.today()
+    outcomes = []
+    pending = []
+
+    for session in sorted(sessions, key=lambda s: s.local_date):
+        day = session.local_date
+        if day >= cutoff:
+            pending.append(day)
+            continue
+        if session.kind == "run":
+            outcomes.append(
+                SessionOutcome(
+                    local_date=day,
+                    kind="run",
+                    planned_sets=0,
+                    logged_sets=1 if day in runs else 0,
+                )
+            )
+            continue
+
+        logged = logged_by_day.get(day, {})
+        outcomes.append(
+            SessionOutcome(
+                local_date=day,
+                kind="lift",
+                planned_sets=session.total_sets,
+                logged_sets=sum(logged.values()),
+                missing=tuple(
+                    exercise.title
+                    for exercise in session.exercises
+                    if not logged.get(exercise.exercise_template_id)
+                ),
+            )
+        )
+
+    week_start = min((s.local_date for s in sessions), default=date.min)
+    return Adherence(
+        week_start=week_start, sessions=tuple(outcomes), pending=tuple(pending)
+    )
+
+
+def adherence_summary(result: Adherence) -> str:
+    """One or two lines for the planner's instruction.
+
+    Rendering, not computing -- and phrased as observation, because this text
+    reaches a model that is about to write a rationale, and "you missed two
+    sessions" is the sort of line that comes back out as a reprimand.
+    """
+    if result.not_started:
+        return f"  (that week has not started yet -- {len(result.pending)} sessions ahead)"
+    if not result.sessions:
+        return "  (no previous plan to compare against)"
+
+    lines = [
+        f"  {result.completed} of {result.planned} planned sessions had logged training"
+    ]
+    if result.missed:
+        days = ", ".join(day.isoformat() for day in result.missed)
+        lines.append(f"  nothing logged on: {days}")
+
+    partial = [
+        s for s in result.sessions if s.completed and s.missing and s.kind == "lift"
+    ]
+    if partial:
+        detail = "; ".join(
+            f"{s.local_date}: {', '.join(s.missing)} not logged" for s in partial[:3]
+        )
+        lines.append(f"  planned but not trained -- {detail}")
+    return "\n".join(lines)
