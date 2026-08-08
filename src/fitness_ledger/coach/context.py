@@ -2,8 +2,9 @@
 
 The plan called this an agent. It is deliberately *not* an LlmAgent, and the
 reason is the same one that motivated it: the context reader exists so the
-strength and running planners don't each make the same tool calls against a
-~15 RPM free-tier budget. An LlmAgent would spend requests to save requests.
+strength and running planners don't each make the same tool calls against a free
+tier that allows single-digit requests per minute. An LlmAgent would spend
+requests to save requests.
 
 So the work is a plain function, and the ADK piece is a thin adapter that
 publishes the result to session state. Three things follow from that:

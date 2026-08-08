@@ -187,9 +187,9 @@ def test_which_days_are_left_is_not_left_to_the_agent(bound):
 def test_the_reader_calls_no_model(bound):
     """Pins the design decision.
 
-    This exists to save requests against a ~15 RPM budget. An LlmAgent would
-    spend requests to save requests, so if someone later "upgrades" it to one,
-    this should fail and make them argue for it.
+    This exists to save requests against a single-digit-per-minute budget. An
+    LlmAgent would spend requests to save requests, so if someone later
+    "upgrades" it to one, this should fail and make them argue for it.
     """
     pytest.importorskip("google.adk", reason="coach extra not installed")
     from google.adk.agents import LlmAgent

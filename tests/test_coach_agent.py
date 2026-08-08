@@ -330,3 +330,21 @@ def test_an_exercise_may_name_the_id_field_either_way():
 def test_the_explicit_field_wins_over_the_synonym():
     exercise = PlannedExercise(exercise_template_id="RIGHT", id="WRONG", title="Row")
     assert exercise.exercise_template_id == "RIGHT"
+
+
+def test_both_planners_sample_deterministically(bound):
+    """A flaky eval is worse than none: it teaches you to ignore failures.
+
+    At default temperature the same ledger yields a different week each run, so
+    a failing assertion could mean the prompt regressed or the sampler wandered,
+    with no way to tell which.
+    """
+    pytest.importorskip("google.adk", reason="coach extra not installed")
+    from fitness_ledger.coach.agent import PLANNER_TEMPERATURE, build_coach
+
+    repo, config = bound
+    _, strength, running = build_coach(repo, config).sub_agents
+
+    assert PLANNER_TEMPERATURE == 0.0
+    for planner in (strength, running):
+        assert planner.generate_content_config.temperature == PLANNER_TEMPERATURE
