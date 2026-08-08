@@ -145,6 +145,7 @@ export type Insight = {
  *  window comes from the backend rather than being named again here.
  */
 export type InsightReport = {
+  section: string | null;
   window: string;
   weeks: number;
   insights: Insight[];
@@ -187,7 +188,8 @@ export const api = {
   run: (range: Range) => get<RunSection>(`/api/run${qs(range)}`),
   gym: (range: Range) => get<GymSection>(`/api/gym${qs(range)}`),
   vitals: () => get<Vitals>("/api/vitals"),
-  insights: () => get<InsightReport>("/api/insights"),
+  insights: (section?: string) =>
+    get<InsightReport>(`/api/insights${section ? `?section=${section}` : ""}`),
   exercises: (onlyLogged = true) =>
     get<ExerciseSummary[]>(`/api/exercises?only_logged=${onlyLogged}`),
   exercise: (id: string, range: Range) =>

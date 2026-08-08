@@ -82,14 +82,15 @@ def test_volume_endpoint_excludes_warmups(client):
 
 
 def test_insights_report_the_scope_they_were_found_over(client):
-    """The coach strip obeys neither the section tabs nor the filter (#14).
+    """The strip follows the section tabs but not the filter (#14).
 
-    It says so, using the window the rules actually read rather than a period
-    named in the UI, so the label cannot drift from `insight_window`.
+    It reports both, using the window the rules actually read rather than a
+    period named in the UI, so the label cannot drift from `insight_window`.
     """
     body = client.get("/api/insights").json()
 
-    assert set(body) == {"window", "weeks", "insights"}
+    assert set(body) == {"section", "window", "weeks", "insights"}
+    assert body["section"] is None  # unscoped: every finding
     assert body["weeks"] == queries.INSIGHT_LOOKBACK_WEEKS
     assert isinstance(body["insights"], list)
 
@@ -97,6 +98,30 @@ def test_insights_report_the_scope_they_were_found_over(client):
     assert body["window"] == queries.describe_window(start, end)
     # The span is the rules', not the dashboard's default.
     assert (end - start).days == queries.INSIGHT_LOOKBACK_WEEKS * 7 + 1
+
+
+def test_insights_can_be_scoped_to_one_screen(client):
+    """The seeded fixture is all lifting, so Gym has findings and Run does not
+    -- which is the honest answer for someone who has logged no runs."""
+    everything = client.get("/api/insights").json()["insights"]
+    gym = client.get("/api/insights", params={"section": "gym"}).json()
+    run = client.get("/api/insights", params={"section": "run"}).json()
+
+    assert gym["section"] == "gym"
+    assert {i["rule"] for i in gym["insights"]} <= {
+        "volume_drop", "coverage_gap", "stall", "progression_ready", "recovery_flag"
+    }
+    assert {i["rule"] for i in run["insights"]} <= {
+        "running_shortfall", "aei_trend", "recovery_flag"
+    }
+    # Nothing is lost by splitting; recovery is the only rule on both.
+    assert len(gym["insights"]) + len(run["insights"]) >= len(everything)
+
+
+def test_an_unknown_section_is_a_400_not_a_silent_empty_strip(client):
+    res = client.get("/api/insights", params={"section": "cardio"})
+    assert res.status_code == 400
+    assert "cardio" in res.json()["detail"]
 
 
 def test_insight_window_ignores_the_time_horizon_filter(client):

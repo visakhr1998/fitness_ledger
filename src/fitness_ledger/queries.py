@@ -413,12 +413,26 @@ def insight_window(today: date | None = None) -> tuple[date, date]:
     return today - timedelta(weeks=INSIGHT_LOOKBACK_WEEKS), today + timedelta(days=1)
 
 
-def insight_report(repo: SQLiteRepository, config: Config) -> list[dict[str, Any]]:
-    """Run every detection rule against the cache."""
+def insight_report(
+    repo: SQLiteRepository, config: Config, section: str | None = None
+) -> list[dict[str, Any]]:
+    """Run every detection rule against the cache.
+
+    ``section`` is "run" or "gym"; None returns everything, which is what the
+    CLI and the coach want.
+    """
     today = date.today()
     start, end = insight_window(today)
     default = RepRange(config.rep_range_low, config.rep_range_high)
     overrides = rep_ranges(repo, config)
+
+    # Only reliable runs carry an AEI worth trending; an excluded one already
+    # says why on the Run screen and should not also skew a comparison.
+    aei_series = [
+        (date.fromisoformat(row["local_date"]), row["aei"])
+        for row in repo.get_run_metrics(start, end)
+        if row["reliable"] and row["aei"] is not None
+    ]
 
     found = detect(
         repo.get_sets(start, end),
@@ -430,6 +444,10 @@ def insight_report(repo: SQLiteRepository, config: Config) -> list[dict[str, Any
         count_warmup_sets=config.count_warmup_sets,
         week_starts_on=config.week_starts_on,
         rep_ranges={**{k: default for k in overrides}, **overrides},
+        runs=repo.get_runs(start, end),
+        running_target=repo.get_running_target(),
+        aei_series=aei_series,
+        section=section,
     )
     return [insight.as_dict() for insight in found]
 

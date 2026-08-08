@@ -37,7 +37,10 @@ export function App() {
         ) : (
           <GymScreen range={range} reloadKey={reloadKey} />
         )}
-        <CoachStrip reloadKey={reloadKey} />
+        {/* Below the screen but scoped to it: the rules that apply to lifting
+            are not the ones that apply to running. It stays outside the
+            Run/Gym switch so it keeps its place at the foot of both. */}
+        <CoachStrip section={section} reloadKey={reloadKey} />
       </main>
 
       <ChatDock section={section} />
