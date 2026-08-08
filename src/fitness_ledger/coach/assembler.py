@@ -68,7 +68,12 @@ def deficits(ledger_state: dict[str, Any]) -> dict[str, float]:
 
 
 def pool_ids(exercise_pool: list[dict[str, Any]] | None) -> set[str]:
-    return {row["id"] for row in exercise_pool or []}
+    """Template ids the plan may use. Tolerates either key the pool has used."""
+    return {
+        row.get("exercise_template_id") or row.get("id")
+        for row in exercise_pool or []
+        if row.get("exercise_template_id") or row.get("id")
+    }
 
 
 def assemble(

@@ -32,7 +32,7 @@ from __future__ import annotations
 from datetime import date
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from ..config import Config
 from ..db import SQLiteRepository
@@ -51,8 +51,23 @@ ADK_INTERNAL_CALLS = frozenset({"set_model_response"})
 class PlannedExercise(BaseModel):
     """One exercise in a session. Deliberately carries no set count."""
 
+    @model_validator(mode="before")
+    @classmethod
+    def _accept_id(cls, data: Any) -> Any:
+        """Take `id` for `exercise_template_id`.
+
+        Belt and braces behind naming the pool field to match. A whole week is
+        thrown away when one exercise names the field wrong, and the model has
+        already done it once -- the cost of tolerating a synonym is far lower
+        than the cost of a failed plan.
+        """
+        if isinstance(data, dict) and "exercise_template_id" not in data and "id" in data:
+            data = {**data, "exercise_template_id": data["id"]}
+        return data
+
     exercise_template_id: str = Field(
-        description="id from the exercise pool; anything else cannot be written to Hevy"
+        description="exercise_template_id from the exercise pool, copied exactly; "
+        "anything else cannot be written to Hevy"
     )
     title: str = Field(description="the exercise name, as it appears in the pool")
     targets: list[str] = Field(

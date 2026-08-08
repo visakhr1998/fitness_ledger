@@ -314,3 +314,19 @@ def test_the_running_planner_has_no_tools(bound):
 
     assert running.tools == []
     assert strength.tools, "the strength planner still needs the exercise pool"
+
+
+def test_an_exercise_may_name_the_id_field_either_way():
+    """The pool once returned "id" while the schema demanded
+    "exercise_template_id", and the model copied the name it was shown -- one
+    wrong key threw away a whole week's plan at validation."""
+    assert PlannedExercise(id="ABC", title="Bench").exercise_template_id == "ABC"
+    assert (
+        PlannedExercise(exercise_template_id="XYZ", title="Row").exercise_template_id
+        == "XYZ"
+    )
+
+
+def test_the_explicit_field_wins_over_the_synonym():
+    exercise = PlannedExercise(exercise_template_id="RIGHT", id="WRONG", title="Row")
+    assert exercise.exercise_template_id == "RIGHT"
