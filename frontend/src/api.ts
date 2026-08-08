@@ -130,6 +130,44 @@ export type ExerciseDetail = {
   sessions: number;
 };
 
+/** A stored training week. Set counts were computed from the deficit, never
+ *  proposed by the model — see planning.py. */
+export type PlanSection = {
+  available: boolean;
+  reason?: string;
+  plan: {
+    id: number | null;
+    week_start: string;
+    generated_at: string | null;
+    status: string;
+    supersedes: number | null;
+    rationale: string;
+    trade_offs: string;
+    total_sets: number;
+    sessions: {
+      date: string;
+      kind: string;
+      focus: string;
+      distance_km: number | null;
+      total_sets: number;
+      exercises: {
+        exercise_template_id: string;
+        title: string;
+        sets: number;
+        targets: string[];
+      }[];
+    }[];
+  } | null;
+  problems: string[];
+  adherence: {
+    not_started: boolean;
+    sessions_planned: number;
+    sessions_completed: number;
+    sessions_ahead: number;
+    missed_days: string[];
+  } | null;
+};
+
 export type Insight = {
   rule: string;
   severity: "warn" | "info";
@@ -188,6 +226,7 @@ export const api = {
   run: (range: Range) => get<RunSection>(`/api/run${qs(range)}`),
   gym: (range: Range) => get<GymSection>(`/api/gym${qs(range)}`),
   vitals: () => get<Vitals>("/api/vitals"),
+  plan: (week?: string) => get<PlanSection>(`/api/plan${week ? `?week=${week}` : ""}`),
   insights: (section?: string) =>
     get<InsightReport>(`/api/insights${section ? `?section=${section}` : ""}`),
   exercises: (onlyLogged = true) =>

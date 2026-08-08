@@ -8,6 +8,7 @@ settings, an explicitly triggered sync, and approval-gated Hevy write-back.
 from __future__ import annotations
 
 import json
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -79,6 +80,26 @@ def get_strength(weeks: int = Query(16, ge=1, le=104)) -> dict[str, Any]:
 def get_progression() -> list[dict[str, Any]]:
     with repo() as repository:
         return queries.progression_report(repository, _config)
+
+
+@app.get("/api/plan")
+def get_plan(week: str | None = Query(None)) -> dict[str, Any]:
+    """The stored plan for a week, or the most recent one.
+
+    Deliberately takes no window argument. A plan is one specific week, so the
+    dashboard's time-horizon filter has nothing to say about it -- the Week tab
+    sits outside the filter for the same reason the coach strip does.
+
+    Read-only for now. Generating and approving land with day 10, which already
+    owns the write-back wiring.
+    """
+    try:
+        parsed = date.fromisoformat(week) if week else None
+    except ValueError as exc:
+        raise HTTPException(400, f"Unrecognised week {week!r}; expected YYYY-MM-DD") from exc
+
+    with repo() as repository:
+        return sections.plan_section(repository, _config, parsed.isoformat() if parsed else None)
 
 
 @app.get("/api/insights")

@@ -12,10 +12,11 @@ from datetime import date, timedelta
 from statistics import fmean
 from typing import Any
 
-from . import icons, vitals as vitals_module
+from . import icons, queries, vitals as vitals_module
 from .config import Config
 from .db import SQLiteRepository
 from .models import WORKING_SET_TYPES
+from .planning import validate
 from .progression import RepRange, progression_state, stalled
 from .queries import describe_window, get_targets, parse_window, rep_ranges
 from .volume import best_set_per_session, compute_volume, coverage
@@ -389,3 +390,68 @@ def _as_float(raw: object) -> float | None:
 def _as_int(raw: object) -> int | None:
     value = _as_float(raw)
     return int(value) if value is not None else None
+
+
+# --- Week ------------------------------------------------------------------
+
+
+def plan_section(
+    repo: SQLiteRepository, config: Config, week: str | None = None
+) -> dict[str, Any]:
+    """The stored plan for a week, ready to render.
+
+    Not scoped by the dashboard's time-horizon filter, and it takes no window
+    argument for that reason: a plan is one specific week, and a filter over it
+    means nothing. `week` selects *which* plan, not how much of it.
+
+    Constraint problems are recomputed here rather than stored on the row. They
+    are a function of the plan and the current preferences, so a stored copy
+    would go stale the moment a preference changed -- and a plan that quietly
+    kept yesterday's verdict is worse than one that has none.
+    """
+    plan = repo.latest_plan(date.fromisoformat(week) if week else None)
+    if plan is None:
+        return {
+            "available": False,
+            "reason": "no plan has been generated yet",
+            "plan": None,
+            "problems": [],
+            "adherence": None,
+        }
+
+    preferences = queries.planning_preferences(repo)
+    followed = queries.plan_adherence(repo, plan)
+
+    # Every template in the catalog, not the trimmed pool the coach was shown:
+    # the check exists to say "can this be written to Hevy", and anything in the
+    # catalog can be. Flagging a real exercise as invalid would be a worse lie
+    # than missing an invented one.
+    catalog = set(repo.get_templates())
+    week_days = {
+        (plan.week_start + timedelta(days=offset)).isoformat() for offset in range(7)
+    }
+    lost = {
+        day.isoformat()
+        for day, entry in repo.get_availability(
+            plan.week_start, plan.week_start + timedelta(days=7)
+        ).items()
+        if not entry.available
+    }
+
+    return {
+        "available": True,
+        "plan": plan.as_dict(),
+        "problems": validate(
+            plan.sessions,
+            pool_ids=catalog or None,
+            training_days=(week_days - lost) or None,
+            preferences=preferences,
+        ),
+        "adherence": {
+            "not_started": followed.not_started,
+            "sessions_planned": followed.planned,
+            "sessions_completed": followed.completed,
+            "sessions_ahead": len(followed.pending),
+            "missed_days": [day.isoformat() for day in followed.missed],
+        },
+    }

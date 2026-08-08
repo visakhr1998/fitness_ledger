@@ -11,46 +11,14 @@ a calculation happening outside the tested rules engine.
 
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date
 from typing import Any
 
 from ..config import Config
 from ..db import SQLiteRepository
-from ..models import WORKING_SET_TYPES, Plan
-from ..planning import Adherence, Preferences, adherence, allocate, validate
-
-# Preference keys in user_settings. Absent means "no opinion", and the defaults
-# in Preferences apply.
-SETTING_KEYS = {
-    "max_sets_per_session": "max_sets_per_session",
-    "min_sets_per_exercise": "min_sets_per_exercise",
-    "max_sets_per_exercise": "max_sets_per_exercise",
-    "min_rest_days_same_muscle": "min_rest_days_same_muscle",
-}
-ALLOW_RUN_AFTER_LEGS_KEY = "allow_run_after_leg_day"
-
-
-def preferences(repo: SQLiteRepository) -> Preferences:
-    """Read the hard constraints, falling back to the documented defaults."""
-    settings = repo.get_settings()
-    values: dict[str, Any] = {}
-    for field, key in SETTING_KEYS.items():
-        raw = settings.get(key)
-        if raw not in (None, ""):
-            try:
-                values[field] = int(float(raw))
-            except (TypeError, ValueError):
-                # A malformed setting should not take the planner down; the
-                # default is a safe week, not a wrong one.
-                continue
-
-    raw_run = settings.get(ALLOW_RUN_AFTER_LEGS_KEY)
-    if raw_run not in (None, ""):
-        values["allow_run_after_leg_day"] = str(raw_run).strip().lower() not in {
-            "0", "false", "no", "off"
-        }
-    return Preferences(**values)
-
+from ..models import Plan
+from ..planning import allocate, validate
+from ..queries import plan_adherence, planning_preferences  # noqa: F401  (re-export)
 
 def deficits(ledger_state: dict[str, Any]) -> dict[str, float]:
     """Sets short per muscle group, straight from the volume tool.
@@ -92,7 +60,7 @@ def assemble(
     """
     proposal = result.get("proposal") or {}
     week_start = date.fromisoformat(result["week_start"])
-    prefs = preferences(repo)
+    prefs = planning_preferences(repo)
 
     allocation = allocate(
         proposal.get("sessions") or [],
@@ -145,31 +113,3 @@ def _trade_offs(stated: str, allocation) -> str:
         names = ", ".join(m.replace("_", " ") for m in allocation.unplaced)
         parts.append(f"No exercise in this week trains: {names}.")
     return " ".join(parts)
-
-
-def plan_adherence(repo: SQLiteRepository, plan) -> Adherence:
-    """How much of a stored plan was actually trained.
-
-    The gathering half: reads the logged week out of the cache and hands it to
-    the pure comparison in planning.py. Everything below the read is arithmetic
-    the rules engine owns.
-    """
-    if plan is None or not plan.sessions:
-        return Adherence(week_start=date.min)
-
-    start = min(session.local_date for session in plan.sessions)
-    end = max(session.local_date for session in plan.sessions) + timedelta(days=1)
-
-    logged_by_day: dict[date, dict[str, int]] = {}
-    for entry in repo.get_sets(start, end):
-        if entry.set_type not in WORKING_SET_TYPES or not entry.exercise_template_id:
-            continue
-        day = logged_by_day.setdefault(entry.local_date, {})
-        day[entry.exercise_template_id] = day.get(entry.exercise_template_id, 0) + 1
-
-    run_days = {
-        run.local_date
-        for run in repo.get_runs(start, end)
-        if run.exercise_type in {"RUNNING", "TREADMILL"}
-    }
-    return adherence(plan.sessions, logged_by_day, run_days, today=date.today())
