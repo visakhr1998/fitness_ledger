@@ -111,7 +111,10 @@ def build_tools(repo: SQLiteRepository, config: Config) -> list[Callable[..., An
             ]
         return [
             {
-                "id": row["id"],
+                # Named as the proposal schema names it, not as the catalog
+                # does. Shown "id", the model copies "id" into a field called
+                # exercise_template_id and the whole proposal fails validation.
+                "exercise_template_id": row["id"],
                 "title": row["title"],
                 "primary_muscle_group": row["primary_muscle_group"],
                 "secondary_muscle_groups": list(row["secondary_muscle_groups"] or ()),
