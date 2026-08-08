@@ -15,15 +15,21 @@ const RULE_LABELS: Record<string, string> = {
   stall: "Stalled lift",
   progression_ready: "Ready to progress",
   recovery_flag: "Recovery",
+  running_shortfall: "Running short",
+  aei_trend: "Aerobic efficiency",
 };
 
-export function CoachStrip({ reloadKey }: { reloadKey: number }) {
+export function CoachStrip({ section, reloadKey }: { section: string; reloadKey: number }) {
   const [report, setReport] = useState<InsightReport | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
 
   useEffect(() => {
-    api.insights().then(setReport).catch(() => setReport(null));
-  }, [reloadKey]);
+    // Drop the previous section's findings while the next load is in flight,
+    // so switching tabs never shows Gym findings under a Run heading.
+    setReport(null);
+    setExpanded(null);
+    api.insights(section).then(setReport).catch(() => setReport(null));
+  }, [section, reloadKey]);
 
   const insights: Insight[] = report?.insights ?? [];
   if (insights.length === 0) return null;
@@ -48,15 +54,13 @@ export function CoachStrip({ reloadKey }: { reloadKey: number }) {
         <CoachMascot />
         <div style={{ flex: "1 1 auto", minWidth: 0 }}>
           <h2 style={{ margin: 0, fontSize: 15, fontWeight: 500 }}>What I noticed</h2>
-          {/* Say what this actually covers. The rules read a fixed span and know
-              nothing about the section tabs or the filter above, so the panel
-              looked broken -- identical on Run and Gym, unmoved by the filter --
-              when it was only ever unlabelled. The window comes from the
-              backend so the two cannot drift apart. */}
+          {/* Say what this actually covers. It now follows the section tabs but
+              still not the filter above -- each rule defines its own window and
+              a seven-day filter would silence them rather than rescope them.
+              The window comes from the backend so the label cannot drift. */}
           <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 2 }}>
-            All training, {report?.window ?? `last ${report?.weeks ?? 12} weeks`} — this
-            panel is not scoped by the section or the filter above. Nothing here changes
-            your training.
+            {section === "run" ? "Running" : "Lifting"} and recovery, {report?.window} — not
+            scoped by the filter above. Nothing here changes your training.
           </div>
 
           <div className="coach-list" style={{ display: "grid", gap: 8, marginTop: 12 }}>

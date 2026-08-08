@@ -15,7 +15,7 @@ from __future__ import annotations
 from datetime import date, timedelta
 from statistics import mean
 
-from .models import ExerciseTemplate, Insight, SetEntry, VolumeTarget
+from .models import ExerciseTemplate, Insight, Run, RunningTarget, SetEntry, VolumeTarget
 from .progression import RepRange, main_lifts, progression_state, stalled
 from .volume import compute_volume, week_start
 
@@ -27,6 +27,32 @@ STALL_SESSIONS = 3
 SLEEP_SHORT_MINUTES = 30.0  # below baseline by this much counts as short
 SLEEP_RECENT_DAYS = 3
 SLEEP_BASELINE_DAYS = 28
+RUNNING_SHORTFALL_RATIO = 0.9  # within 10% of the distance target is on track
+AEI_TREND_RUNS = 3  # runs per side of the comparison; needs twice this to fire
+AEI_TREND_MIN_CHANGE = 0.03  # 3%; below this is noise, not a trend
+
+# Which screen each rule belongs to. Recovery sits on both: sleep is neither a
+# lifting nor a running observation, and hiding it from one screen would mean
+# the user sees it or not depending on which tab they happened to open.
+#
+# The split is data, not a naming convention, so a new rule has to state where
+# it belongs -- `detect` raises if one does not appear here.
+RULE_SECTIONS: dict[str, frozenset[str]] = {
+    "volume_drop": frozenset({"gym"}),
+    "coverage_gap": frozenset({"gym"}),
+    "stall": frozenset({"gym"}),
+    "progression_ready": frozenset({"gym"}),
+    "running_shortfall": frozenset({"run"}),
+    "aei_trend": frozenset({"run"}),
+    "recovery_flag": frozenset({"gym", "run"}),
+}
+
+
+def for_section(insights: list[Insight], section: str | None) -> list[Insight]:
+    """Findings that belong on one screen, or all of them when section is None."""
+    if section is None:
+        return insights
+    return [i for i in insights if section in RULE_SECTIONS.get(i.rule, frozenset())]
 
 
 def detect(
@@ -40,8 +66,17 @@ def detect(
     count_warmup_sets: bool = False,
     week_starts_on: int = 0,
     rep_ranges: dict[str, RepRange] | None = None,
+    runs: list[Run] | None = None,
+    running_target: RunningTarget | None = None,
+    aei_series: list[tuple[date, float]] | None = None,
+    section: str | None = None,
 ) -> list[Insight]:
-    """Run every rule and return the findings, most severe first."""
+    """Run every rule and return the findings, most severe first.
+
+    The running arguments are optional so a caller with no running data gets the
+    strength rules and nothing else, rather than an error -- the same way the
+    sleep rules stay quiet without sleep.
+    """
     insights: list[Insight] = []
     insights += volume_drop(
         sets, templates, today,
@@ -57,10 +92,17 @@ def detect(
     )
     insights += progression_insights(sets, templates, today, rep_ranges or {})
     insights += recovery_flag(sets, sleep_by_day, today)
+    insights += running_shortfall(
+        runs or [], running_target, today, week_starts_on=week_starts_on
+    )
+    insights += aei_trend(aei_series or [], today)
+
+    unplaced = {i.rule for i in insights} - set(RULE_SECTIONS)
+    assert not unplaced, f"rules missing from RULE_SECTIONS: {sorted(unplaced)}"
 
     order = {"warn": 0, "info": 1}
     insights.sort(key=lambda i: (order.get(i.severity, 9), i.rule, i.subject))
-    return insights
+    return for_section(insights, section)
 
 
 def _week_rollups(
@@ -219,6 +261,108 @@ def progression_insights(
                 )
             )
     return findings
+
+
+def running_shortfall(
+    runs: list[Run],
+    target: RunningTarget | None,
+    today: date,
+    *,
+    week_starts_on: int = 0,
+) -> list[Insight]:
+    """Last complete week's running against the weekly target.
+
+    The **last complete week**, not the last seven days, for the same reason the
+    volume rules use one: a part-finished week is short by definition and would
+    fire this every Monday. Priority rank three is "runs on track", and without
+    this rule nothing measured it.
+
+    Silent when no target is set. An unset target is not a shortfall, and
+    nagging someone to set one is not this panel's job.
+    """
+    if target is None:
+        return []
+
+    end = week_start(today, week_starts_on)
+    start = end - timedelta(days=7)
+    last_week = [
+        run
+        for run in runs
+        if run.exercise_type == "RUNNING" and start <= run.local_date < end
+    ]
+    distance_km = sum((run.distance_m or 0) / 1000.0 for run in last_week)
+    sessions = len(last_week)
+
+    short_distance = distance_km < target.distance_km_per_week * RUNNING_SHORTFALL_RATIO
+    short_sessions = sessions < target.sessions_per_week
+    if not (short_distance or short_sessions):
+        return []
+
+    return [
+        Insight(
+            rule="running_shortfall",
+            severity="warn" if short_distance else "info",
+            subject="running",
+            message=(
+                f"Ran {distance_km:.1f} km across {sessions} "
+                f"session{'' if sessions == 1 else 's'} last week, against a target of "
+                f"{target.distance_km_per_week:g} km across {target.sessions_per_week}"
+            ),
+            detected_at=today,
+            data={
+                "distance_km": round(distance_km, 2),
+                "sessions": sessions,
+                "target_distance_km": target.distance_km_per_week,
+                "target_sessions": target.sessions_per_week,
+                "week_start": start.isoformat(),
+            },
+        )
+    ]
+
+
+def aei_trend(series: list[tuple[date, float]], today: date) -> list[Insight]:
+    """Aerobic efficiency over the last few runs against the few before.
+
+    Runs, not weeks: AEI is a per-run measurement and someone running twice a
+    week would wait a month for a weekly comparison to say anything.
+
+    Informational either way. AEI moves ~10% on a method change and a single
+    hot day moves it too, so calling a decline a warning would fire on weather.
+    """
+    if len(series) < AEI_TREND_RUNS * 2:
+        return []
+
+    ordered = [value for _, value in sorted(series)]
+    recent = ordered[-AEI_TREND_RUNS:]
+    earlier = ordered[-AEI_TREND_RUNS * 2 : -AEI_TREND_RUNS]
+    recent_mean, earlier_mean = mean(recent), mean(earlier)
+    if not earlier_mean:
+        return []
+
+    change = (recent_mean - earlier_mean) / earlier_mean
+    if abs(change) < AEI_TREND_MIN_CHANGE:
+        return []
+
+    return [
+        Insight(
+            rule="aei_trend",
+            severity="info",
+            subject="aerobic_efficiency",
+            message=(
+                f"Aerobic efficiency averaged {recent_mean:.3f} m/beat over your last "
+                f"{AEI_TREND_RUNS} runs, against {earlier_mean:.3f} over the "
+                f"{AEI_TREND_RUNS} before -- {'up' if change > 0 else 'down'} "
+                f"{abs(change):.0%}"
+            ),
+            detected_at=today,
+            data={
+                "recent_mean": round(recent_mean, 4),
+                "earlier_mean": round(earlier_mean, 4),
+                "change_pct": round(change * 100, 1),
+                "runs_compared": AEI_TREND_RUNS,
+            },
+        )
+    ]
 
 
 def recovery_flag(

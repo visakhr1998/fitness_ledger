@@ -82,20 +82,24 @@ def get_progression() -> list[dict[str, Any]]:
 
 
 @app.get("/api/insights")
-def get_insights() -> dict[str, Any]:
-    """Findings, plus the scope they were found over.
+def get_insights(section: str | None = Query(None)) -> dict[str, Any]:
+    """Findings for one screen, plus the scope they were found over.
 
-    The scope travels with them because the coach strip sits under the
-    time-horizon filter and obeys neither it nor the section tabs. It reports
-    the window rather than letting the UI name a period of its own, which would
-    drift from `insight_window` the first time either changed.
+    The scope travels with them because the strip obeys the section tabs but
+    deliberately not the time-horizon filter, and reporting the window beats
+    letting the UI name a period of its own that would drift from
+    `insight_window` the first time either changed.
     """
+    if section is not None and section not in {"run", "gym"}:
+        raise HTTPException(400, f"Unknown section {section!r}; expected 'run' or 'gym'")
+
     start, end = queries.insight_window()
     with repo() as repository:
         return {
+            "section": section,
             "window": queries.describe_window(start, end),
             "weeks": queries.INSIGHT_LOOKBACK_WEEKS,
-            "insights": queries.insight_report(repository, _config),
+            "insights": queries.insight_report(repository, _config, section),
         }
 
 
