@@ -147,7 +147,7 @@ All handled in `sync.py` / `mcp_client.py`; don't rediscover them.
 ## Working here
 
 ```bash
-./.venv/Scripts/python.exe -m pytest              # 178 tests, keep them green
+./.venv/Scripts/python.exe -m pytest              # 290 tests, keep them green
 cd frontend && npm run build                      # required after any frontend change
 ./.venv/Scripts/python.exe -m fitness_ledger.cli doctor
 ./.venv/Scripts/python.exe -m fitness_ledger.cli sync
@@ -200,6 +200,35 @@ Expectations for changes:
 - **The chat dock needs *a* model provider, not a specific one.** Gemini's free
   tier is the default; `ollama` runs it locally. Without any provider the dock
   says so; the rest of the dashboard must never depend on one.
+
+## Keeping UNDERSTANDING.md current
+
+`UNDERSTANDING.md` at the repo root is the handoff document: it exists so a
+session with no prior context can pick this project up. Much of what it holds —
+why ADK was rejected and then accepted, which alternatives were priced and
+dropped, what the numbers in a bug actually were — lives nowhere else, and is
+lost the moment a conversation ends.
+
+**Update it in the same PR as the change**, not afterwards, whenever you:
+
+- finish a milestone or a numbered day of a multi-day plan;
+- make or reverse an architectural decision, including the alternatives you
+  rejected and why;
+- find a bug worth remembering, or fix one whose cause was non-obvious;
+- change the stack, a dependency, a command, or an environment variable;
+- discover a gotcha, a data-source quirk, or a deliberate workaround;
+- agree on a next step, or park work that is half-finished.
+
+Rules for editing it:
+
+- **Ground every statement in code you have read.** Mark inferences as
+  **[inference]** and unknowns as **UNKNOWN**. A confident wrong line there
+  misleads every future session, which is worse than a gap.
+- **Keep the two top-level sections**: `# Requirements` (product prose) and
+  `# Tech details`.
+- **Correct stale claims rather than appending to them.** The README once
+  contradicted itself for two versions because nobody deleted the old paragraph.
+- Update the test count and the commit reference in the header when they move.
 
 ## Updating this file
 
