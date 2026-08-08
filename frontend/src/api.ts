@@ -36,9 +36,13 @@ export type RunSection = {
     count: number;
     total_km: number;
     avg_heart_rate: number | null;
-    per_bucket: Bucket[];
-    km_per_bucket: Bucket[];
-    heart_rate_per_run: { date: string; avg_heart_rate: number; distance_km: number }[];
+    /** One row per run, oldest first, nothing filtered. Every Run chart reads this. */
+    list: {
+      date: string;
+      distance_km: number;
+      duration_s: number | null;
+      avg_heart_rate: number | null;
+    }[];
   };
 };
 

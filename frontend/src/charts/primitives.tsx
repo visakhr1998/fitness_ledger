@@ -200,10 +200,16 @@ export function Spark({ points, width = 150, height = 64 }: { points: Point[]; w
   );
 }
 
-/** Pill-bar strip with the final bucket marked, mirroring the reference. */
+/** Pill-bar strip with the final bar marked, mirroring the reference.
+ *
+ *  Carries a tooltip like every other chart here. It was the one primitive
+ *  without one, which left the Distance strip showing bars of visibly different
+ *  heights and no way to read what any of them meant.
+ */
 export function PillBars({
-  points, width = 150, height = 64, target,
-}: { points: Point[]; width?: number; height?: number; target?: number }) {
+  points, width = 150, height = 64, target, unit = "",
+}: { points: Point[]; width?: number; height?: number; target?: number; unit?: string }) {
+  const { tip, show, hide } = useTooltip();
   if (points.length === 0) return <svg width={width} height={height} aria-hidden />;
   const max = Math.max(...points.map((p) => p.value), target ?? 0) || 1;
   const band = width / points.length;
@@ -211,35 +217,79 @@ export function PillBars({
   const usable = height - 10;
 
   return (
-    <svg width={width} height={height} role="img" aria-label="per-period totals">
-      {target !== undefined && target > 0 && (
-        <line
-          x1={0} x2={width} y1={height - 4 - (target / max) * usable}
-          y2={height - 4 - (target / max) * usable}
-          stroke="var(--accent-alt)" strokeWidth={1.5}
-        />
-      )}
-      {points.map((p, i) => {
-        const h = Math.max((p.value / max) * usable, p.value > 0 ? 4 : 0);
-        if (h <= 0) return null;
-        const x = i * band + (band - barWidth) / 2;
-        return (
-          <path
-            key={p.label}
-            d={pillPath(x, height - 4 - h, barWidth, h)}
-            fill={i === points.length - 1 ? "var(--accent-alt)" : "var(--accent)"}
-            opacity={i === points.length - 1 ? 1 : 0.75}
+    <>
+      <svg width={width} height={height} role="img" aria-label="per-period totals">
+        {target !== undefined && target > 0 && (
+          <line
+            x1={0} x2={width} y1={height - 4 - (target / max) * usable}
+            y2={height - 4 - (target / max) * usable}
+            stroke="var(--accent-alt)" strokeWidth={1.5}
           />
-        );
-      })}
-    </svg>
+        )}
+        {points.map((p, i) => {
+          const h = Math.max((p.value / max) * usable, p.value > 0 ? 4 : 0);
+          const x = i * band + (band - barWidth) / 2;
+          return (
+            <g key={`${p.label}-${i}`}>
+              {h > 0 && (
+                <path
+                  d={pillPath(x, height - 4 - h, barWidth, h)}
+                  fill={i === points.length - 1 ? "var(--accent-alt)" : "var(--accent)"}
+                  opacity={i === points.length - 1 ? 1 : 0.75}
+                />
+              )}
+              {/* Full-height hit area: the bars are ~14 px wide and a 4 px one
+                  is impossible to hover. */}
+              <rect
+                x={i * band} y={0} width={band} height={height} fill="transparent"
+                onMouseMove={(event) =>
+                  show(event, p.label, [`${fmt(p.value, 2)} ${unit}`.trim(), ...(p.meta ?? [])])
+                }
+                onMouseLeave={hide}
+              />
+            </g>
+          );
+        })}
+      </svg>
+      <Tooltip tip={tip} />
+    </>
   );
 }
 
-/** Full-width line chart with axes, gridlines and a nearest-point tooltip. */
+/** Where each point sits along the x axis, as a fraction from 0 to 1.
+ *
+ *  With `dateScale`, spacing comes from the dates themselves, so a twelve-day
+ *  gap draws six times wider than a two-day one. Without it, points are evenly
+ *  spaced by index, which is right for buckets (every week is a week wide) and
+ *  wrong for runs.
+ *
+ *  Falls back to index spacing whenever dates cannot carry the scale: a label
+ *  that will not parse, a single point, or every point on the same day. Each of
+ *  those would otherwise divide by a zero span.
+ */
+export function xFractions(labels: string[], dateScale = false): number[] {
+  const evenly = labels.map((_, i) => i / Math.max(labels.length - 1, 1));
+  if (!dateScale || labels.length < 2) return evenly;
+
+  const times = labels.map((label) => new Date(`${label}T00:00:00`).getTime());
+  if (times.some((t) => Number.isNaN(t))) return evenly;
+
+  const first = Math.min(...times);
+  const span = Math.max(...times) - first;
+  if (span <= 0) return evenly;
+  return times.map((t) => (t - first) / span);
+}
+
+/** Full-width line chart with axes, gridlines and a per-point tooltip.
+ *
+ *  Set `dateScale` when the labels are ISO dates and the gaps between them are
+ *  uneven, which is every running chart here. Without it points are spaced by
+ *  array index, so a twelve-day gap and a two-day gap render the same width --
+ *  the one thing a time series is supposed to show.
+ */
 export function LineChart({
-  points, height = 240, unit = "", yLabel,
-}: { points: Point[]; height?: number; unit?: string; yLabel?: string }) {
+  points, height = 240, unit = "", yLabel, dateScale = false,
+}: { points: Point[]; height?: number; unit?: string; yLabel?: string; dateScale?: boolean }) {
   const [ref, width] = useWidth<HTMLDivElement>();
   const { tip, show, hide } = useTooltip();
 
@@ -260,7 +310,10 @@ export function LineChart({
   const max = Math.max(...values);
   const lo = min - (max - min || min * 0.1 || 1) * 0.15;
   const hi = max + (max - min || min * 0.1 || 1) * 0.15;
-  const x = (i: number) => margin.left + (i * inner) / Math.max(points.length - 1, 1);
+
+  const fractions = xFractions(points.map((p) => p.label), dateScale);
+  const at = (i: number) => fractions[i];
+  const x = (i: number) => margin.left + at(i) * inner;
   const y = (v: number) => margin.top + innerHeight - ((v - lo) / (hi - lo || 1)) * innerHeight;
 
   const gridValues = [lo, (lo + hi) / 2, hi];
@@ -292,7 +345,8 @@ export function LineChart({
 
           {points.map((p, i) => (
             <circle
-              key={p.label} cx={x(i)} cy={y(p.value)} r={4}
+              // Two runs can share a date, so the label is not a key.
+              key={`${p.label}-${i}`} cx={x(i)} cy={y(p.value)} r={4}
               fill="var(--accent)" stroke="var(--surface)" strokeWidth={2}
               onMouseMove={(event) => show(event, p.label, [`${fmt(p.value, 3)} ${unit}`, ...(p.meta ?? [])])}
               onMouseLeave={hide}
@@ -308,11 +362,16 @@ export function LineChart({
             {fmt(points[points.length - 1].value, 2)}
           </text>
 
-          {[0, Math.floor(points.length / 2), points.length - 1]
+          {/* First, last, and whichever point sits nearest the middle of the
+              axis -- by time when the scale is time, so the middle label lands
+              where the eye expects rather than at the median run. */}
+          {[0, midpointIndex(at, points.length), points.length - 1]
             .filter((i, index, all) => all.indexOf(i) === index)
             .map((i) => (
               <text
-                key={i} x={x(i)} y={height - 10} textAnchor="middle"
+                key={i}
+                x={Math.min(Math.max(x(i), margin.left + 18), margin.left + inner - 18)}
+                y={height - 10} textAnchor="middle"
                 fill="var(--text-muted)" fontSize={11}
               >
                 {points[i].label}
@@ -323,6 +382,20 @@ export function LineChart({
       <Tooltip tip={tip} />
     </div>
   );
+}
+
+/** Index of the point nearest the halfway mark of the x axis. */
+function midpointIndex(at: (i: number) => number, count: number): number {
+  let best = 0;
+  let bestGap = Infinity;
+  for (let i = 0; i < count; i += 1) {
+    const gap = Math.abs(at(i) - 0.5);
+    if (gap < bestGap) {
+      bestGap = gap;
+      best = i;
+    }
+  }
+  return best;
 }
 
 /** Column chart with an optional mean reference line. */

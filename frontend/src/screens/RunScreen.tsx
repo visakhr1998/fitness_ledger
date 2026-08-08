@@ -2,15 +2,27 @@
 
 import { useEffect, useState } from "react";
 import { api, type Range, type RunSection, type Vitals } from "../api";
-import { Card, Columns, fmt, LineChart, PillBars, Spark, TableTwin, type Point } from "../charts/primitives";
+import { Card, fmt, LineChart, PillBars, shortDate, Spark, TableTwin, type Point } from "../charts/primitives";
 import { MetricCard } from "../components/shell";
 import { VitalsCard } from "../components/VitalsCard";
+
+/** "38:12" from seconds, or null when the source did not record a duration. */
+function runDuration(seconds: number | null): string | null {
+  if (!seconds) return null;
+  const total = Math.round(seconds);
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const secs = total % 60;
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return hours > 0 ? `${hours}:${pad(minutes)}:${pad(secs)}` : `${minutes}:${pad(secs)}`;
+}
 
 export function RunScreen({ range, reloadKey }: { range: Range; reloadKey: number }) {
   const [data, setData] = useState<RunSection | null>(null);
   const [vitals, setVitals] = useState<Vitals | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [showAeiTable, setShowAeiTable] = useState(false);
+  const [showHrTable, setShowHrTable] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -37,6 +49,19 @@ export function RunScreen({ range, reloadKey }: { range: Range; reloadKey: numbe
       point.avg_heart_rate ? `${point.avg_heart_rate} bpm average` : "no heart rate",
     ],
   }));
+
+  // Runs with no recorded heart rate are counted under the chart rather than
+  // silently dropped, so a gap in the line has a stated cause.
+  const heartRatePoints: Point[] = data.runs.list
+    .filter((run) => run.avg_heart_rate !== null)
+    .map((run) => ({
+      label: run.date,
+      value: run.avg_heart_rate as number,
+      meta: [
+        `${fmt(run.distance_km, 2)} km`,
+        runDuration(run.duration_s) ? `${runDuration(run.duration_s)} moving` : "no duration recorded",
+      ],
+    }));
 
   const delta = data.aei.delta;
   const deltaText =
@@ -75,7 +100,7 @@ export function RunScreen({ range, reloadKey }: { range: Range; reloadKey: numbe
             />
           }
         >
-          <LineChart points={aeiPoints} unit="m/beat" yLabel="Aerobic Efficiency Index" />
+          <LineChart points={aeiPoints} unit="m/beat" yLabel="Aerobic Efficiency Index" dateScale />
           {data.aei.excluded.length > 0 && (
             <div style={{ marginTop: 12, fontSize: 12, color: "var(--text-muted)" }}>
               {data.aei.excluded.length} run{data.aei.excluded.length === 1 ? "" : "s"} excluded:{" "}
@@ -85,31 +110,61 @@ export function RunScreen({ range, reloadKey }: { range: Range; reloadKey: numbe
         </Card>
 
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: "var(--gap)" }}>
+          {/* Both are period totals. They used to be captioned "per <bucket>",
+              which on a window of 31 days or less read "3 this period / per
+              day". No sparkline on Runs: one bar per run, all the same height,
+              says nothing the number has not already said. */}
           <MetricCard
             label="Runs"
             value={String(data.runs.count)}
-            unit={data.bucket === "day" ? "this period" : ""}
-            caption={`per ${data.bucket}`}
-            visual={<PillBars points={data.runs.per_bucket.map((b) => ({ label: b.bucket, value: b.total }))} />}
+            unit="this period"
+            caption={data.window}
           />
           <MetricCard
             label="Distance"
             value={fmt(data.runs.total_km, 1)}
             unit="km"
-            caption={`per ${data.bucket}`}
-            visual={<PillBars points={data.runs.km_per_bucket.map((b) => ({ label: b.bucket, value: b.total }))} />}
+            caption={data.window}
+            visual={
+              <PillBars
+                points={data.runs.list.map((run) => ({
+                  label: shortDate(run.date),
+                  value: run.distance_km,
+                  meta: [runDuration(run.duration_s)].filter(Boolean) as string[],
+                }))}
+                unit="km"
+              />
+            }
           />
         </div>
 
-        <Card title="Average heart rate per run" caption={data.window}>
-          <Columns
-            points={data.runs.heart_rate_per_run.map((run) => ({
-              label: new Date(`${run.date}T00:00:00`).toLocaleDateString(undefined, { month: "short", day: "numeric" }),
-              value: run.avg_heart_rate,
-              meta: [`${fmt(run.distance_km, 2)} km`],
-            }))}
-            unit="bpm"
-          />
+        <Card
+          title="Average heart rate per run"
+          caption={data.window}
+          action={
+            <TableTwin
+              open={showHrTable}
+              onToggle={() => setShowHrTable((value) => !value)}
+              headers={["Date", "Avg HR", "Distance km", "Time"]}
+              rows={data.runs.list.map((run) => [
+                run.date,
+                run.avg_heart_rate ?? "–",
+                fmt(run.distance_km, 2),
+                runDuration(run.duration_s) ?? "–",
+              ])}
+            />
+          }
+        >
+          {/* A line, not bars: average heart rate is a level, and bars anchored
+              at zero flatten the 130-180 range that carries all the signal. */}
+          <LineChart points={heartRatePoints} unit="bpm" yLabel="Average heart rate" dateScale />
+          {data.runs.list.length > heartRatePoints.length && (
+            <div style={{ marginTop: 12, fontSize: 12, color: "var(--text-muted)" }}>
+              {data.runs.list.length - heartRatePoints.length} run
+              {data.runs.list.length - heartRatePoints.length === 1 ? "" : "s"} without a
+              recorded heart rate, not plotted.
+            </div>
+          )}
         </Card>
       </div>
 

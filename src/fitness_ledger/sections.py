@@ -114,8 +114,6 @@ def run_section(
     ]
 
     runs = [run for run in repo.get_runs(first, last) if run.exercise_type == "RUNNING"]
-    distance_rows = [(run.local_date, (run.distance_m or 0) / 1000.0) for run in runs]
-    count_rows = [(run.local_date, 1.0) for run in runs]
     hr_values = [run.avg_heart_rate for run in runs if run.avg_heart_rate]
 
     latest = aei_points[-1]["aei"] if aei_points else None
@@ -136,18 +134,23 @@ def run_section(
         },
         "runs": {
             "count": len(runs),
-            "total_km": round(sum(value for _, value in distance_rows), 2),
+            "total_km": round(sum((run.distance_m or 0) / 1000.0 for run in runs), 2),
             "avg_heart_rate": round(fmean(hr_values)) if hr_values else None,
-            "per_bucket": _bucket(count_rows, size),
-            "km_per_bucket": _bucket(distance_rows, size),
-            "heart_rate_per_run": [
+            # One row per run, oldest first, nothing filtered out. Every chart on
+            # the Run screen reads this: bucketing by day made each bar a date
+            # total, which is not what a reader of a run chart expects, and the
+            # heart-rate series used to drop runs that had no heart rate rather
+            # than showing the gap.
+            "list": [
                 {
                     "date": run.local_date.isoformat(),
-                    "avg_heart_rate": round(run.avg_heart_rate),
                     "distance_km": round((run.distance_m or 0) / 1000.0, 2),
+                    "duration_s": run.active_duration_s,
+                    "avg_heart_rate": (
+                        round(run.avg_heart_rate) if run.avg_heart_rate else None
+                    ),
                 }
                 for run in runs
-                if run.avg_heart_rate
             ],
         },
     }
