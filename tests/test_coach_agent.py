@@ -1,8 +1,8 @@
-"""The coach's shape and its instruction.
+"""The coach's shape and its instructions.
 
 Nothing here calls a model. What can be checked without one is whether the
-agent is *able* to break the rules -- and the most important rule is enforced
-by the output schema having nowhere to put a violation.
+agents are *able* to break the rules -- and the most important rule is enforced
+by the output schemas having nowhere to put a violation.
 """
 
 from __future__ import annotations
@@ -14,10 +14,16 @@ import pytest
 
 from fitness_ledger.coach.agent import (
     ADK_INTERNAL_CALLS,
-    INSTRUCTION,
+    RUNNING_INSTRUCTION,
+    STRENGTH_INSTRUCTION,
     PlannedExercise,
     PlannedSession,
-    WeekProposal,
+    RunningProposal,
+    RunSession,
+    StrengthProposal,
+    merge_proposals,
+    running_summary,
+    strength_days,
 )
 from fitness_ledger.config import Config
 from fitness_ledger.db import SQLiteRepository
@@ -35,23 +41,33 @@ def bound(tmp_path):
 # --- the rule made structural ----------------------------------------------
 
 
-def test_the_proposal_has_nowhere_to_put_a_set_count():
+def test_no_proposal_has_anywhere_to_put_a_set_count():
     """The locked decision, enforced by shape rather than by asking.
 
-    The agent chooses exercises and days; the assembler computes sets from the
-    deficit. A rule the model *could* break is one that eventually gets
-    broken, so there is no field for it.
+    The agents choose exercises and days; the assembler computes sets from the
+    deficit. A rule the model *could* break is one that eventually gets broken,
+    so there is no field for it -- in either planner's schema.
     """
-    for model in (PlannedExercise, PlannedSession, WeekProposal):
+    for model in (PlannedExercise, PlannedSession, StrengthProposal, RunSession, RunningProposal):
         for name in model.model_fields:
             assert "set" not in name.lower(), f"{model.__name__}.{name}"
             assert "rep" not in name.lower(), f"{model.__name__}.{name}"
 
 
-def test_the_proposal_has_nowhere_to_put_a_weight():
+def test_no_proposal_has_anywhere_to_put_a_weight():
     # Weights come from progression state at assembly, for the same reason.
-    for model in (PlannedExercise, PlannedSession):
+    for model in (PlannedExercise, PlannedSession, RunSession):
         assert not [n for n in model.model_fields if "weight" in n.lower() or "kg" in n.lower()]
+
+
+def test_the_lifting_schema_cannot_carry_a_distance():
+    """A distance on a lifting session would be a run the assembler never sees
+    as one, and the split exists precisely to keep the two apart."""
+    assert not [n for n in PlannedSession.model_fields if "distance" in n.lower()]
+
+
+def test_the_running_schema_cannot_carry_exercises():
+    assert "exercises" not in RunSession.model_fields
 
 
 def test_an_exercise_must_carry_the_id_that_hevy_needs():
@@ -59,18 +75,18 @@ def test_an_exercise_must_carry_the_id_that_hevy_needs():
     assert PlannedExercise.model_fields["exercise_template_id"].is_required()
 
 
-def test_trade_offs_exists_as_its_own_field():
+def test_both_planners_have_their_own_trade_offs_field():
     # Buried in prose, "what I gave up" is unreadable at a glance and
     # unassertable in the eval.
-    assert "trade_offs" in WeekProposal.model_fields
+    assert "trade_offs" in StrengthProposal.model_fields
+    assert "trade_offs" in RunningProposal.model_fields
 
 
 def test_a_minimal_proposal_validates():
-    proposal = WeekProposal(
+    proposal = StrengthProposal(
         sessions=[
             PlannedSession(
                 session_date="2026-08-10",
-                kind="lift",
                 exercises=[PlannedExercise(exercise_template_id="BENCH", title="Bench Press")],
             )
         ],
@@ -79,45 +95,156 @@ def test_a_minimal_proposal_validates():
     assert proposal.trade_offs == ""
 
 
-# --- the instruction -------------------------------------------------------
+# --- the instructions -------------------------------------------------------
 
 
 def test_the_priority_ranking_is_stated_in_order():
     positions = [
-        INSTRUCTION.index("volume per muscle group"),
-        INSTRUCTION.index("full-body coverage"),
-        INSTRUCTION.index("runs on track"),
-        INSTRUCTION.index("session count"),
+        STRENGTH_INSTRUCTION.index("volume per muscle group"),
+        STRENGTH_INSTRUCTION.index("full-body coverage"),
+        STRENGTH_INSTRUCTION.index("runs on track"),
+        STRENGTH_INSTRUCTION.index("session count"),
     ]
     assert positions == sorted(positions)
 
 
-def test_the_no_arithmetic_rule_is_stated():
-    assert "Never do arithmetic" in INSTRUCTION
+def test_the_no_arithmetic_rule_is_stated_to_both():
+    assert "Never do arithmetic" in STRENGTH_INSTRUCTION
+    assert "Never do arithmetic" in RUNNING_INSTRUCTION
 
 
-def test_the_agent_is_told_not_to_choose_its_own_window():
+def test_the_strength_planner_is_told_not_to_choose_its_own_window():
     # The failure this fixed: left to itself it called get_volume_vs_target
     # with 'this-week', a barely-started week where every muscle reads as a
     # full target short, then planned against that.
-    #
-    # Whitespace-normalised: the instruction is hard-wrapped, so a phrase
-    # assertion that ignores wrapping survives reflowing the prose.
-    flat = " ".join(INSTRUCTION.split())
+    flat = " ".join(STRENGTH_INSTRUCTION.split())
     assert "do not pick your own window" in flat
     assert "part-finished week" in flat
 
 
-def test_the_health_boundary_is_stated():
-    assert "may direct training" in INSTRUCTION
-    assert "may not direct health" in INSTRUCTION
+def test_the_health_boundary_is_stated_to_both():
+    for instruction in (STRENGTH_INSTRUCTION, RUNNING_INSTRUCTION):
+        assert "may direct training" in instruction
+        assert "may not direct health" in instruction
 
 
-def test_the_instruction_injects_the_precomputed_deficit():
-    # If this key stops being written to state, ADK raises at run time rather
-    # than silently sending the model an empty deficit.
+def test_the_strength_instruction_injects_the_precomputed_deficit():
+    # If a key stops being written to state, ADK raises at run time rather than
+    # silently sending the model an empty deficit.
     for key in ("{week_start}", "{training_days}", "{goals}", "{deficit_summary}"):
-        assert key in INSTRUCTION
+        assert key in STRENGTH_INSTRUCTION
+
+
+def test_the_running_planner_is_told_lifting_comes_first():
+    flat = " ".join(RUNNING_INSTRUCTION.split())
+    assert "lifting week is already fixed" in flat
+    assert "rather than displacing lifting" in flat
+
+
+def test_the_running_planner_must_not_invent_a_target():
+    """Without a target there is nothing to protect and nothing to plan toward,
+    and a made-up distance would look exactly like a real one."""
+    flat = " ".join(RUNNING_INSTRUCTION.split())
+    assert "no running target, return no sessions" in flat
+    assert "Do not invent a distance" in flat
+
+
+# --- what the running planner is shown --------------------------------------
+
+
+def test_strength_days_renders_the_shape_not_the_exercise_ids():
+    """The running planner needs the shape of the week, not a wall of ids."""
+    rendered = strength_days(
+        {
+            "strength_proposal": {
+                "sessions": [
+                    {
+                        "session_date": "2026-08-10",
+                        "focus": "upper",
+                        "exercises": [{"exercise_template_id": "BENCH"}, {"exercise_template_id": "ROW"}],
+                    }
+                ]
+            }
+        }
+    )
+
+    assert "2026-08-10" in rendered and "upper" in rendered and "2 exercises" in rendered
+    assert "BENCH" not in rendered
+
+
+def test_strength_days_says_so_when_nothing_was_planned():
+    assert "no lifting sessions" in strength_days({})
+
+
+def test_running_summary_survives_an_empty_ledger():
+    assert "no runs recorded" in running_summary({})
+
+
+# --- merging ----------------------------------------------------------------
+
+
+def strength_half():
+    return {
+        "sessions": [
+            {"session_date": "2026-08-12", "focus": "lower", "exercises": [{"exercise_template_id": "SQ"}]},
+            {"session_date": "2026-08-10", "focus": "upper", "exercises": [{"exercise_template_id": "BP"}]},
+        ],
+        "rationale": "chest and quads were short",
+        "trade_offs": "calves untouched",
+    }
+
+
+def running_half():
+    return {
+        "sessions": [{"session_date": "2026-08-11", "focus": "easy", "distance_km": 6.0}],
+        "rationale": "target is 12 km across two runs",
+        "trade_offs": "",
+    }
+
+
+def test_merging_orders_the_week_by_date():
+    merged = merge_proposals(strength_half(), running_half())
+
+    assert [s["session_date"] for s in merged["sessions"]] == [
+        "2026-08-10", "2026-08-11", "2026-08-12"
+    ]
+
+
+def test_merging_tags_each_session_with_its_kind():
+    merged = merge_proposals(strength_half(), running_half())
+    kinds = {s["session_date"]: s["kind"] for s in merged["sessions"]}
+
+    assert kinds == {"2026-08-10": "lift", "2026-08-11": "run", "2026-08-12": "lift"}
+
+
+def test_merging_keeps_the_two_rationales_apart():
+    """When the planners disagree about what the week is for, that is worth
+    being able to read."""
+    merged = merge_proposals(strength_half(), running_half())
+
+    assert "Lifting: chest and quads were short" in merged["rationale"]
+    assert "Running: target is 12 km across two runs" in merged["rationale"]
+
+
+def test_merging_omits_a_half_that_said_nothing():
+    merged = merge_proposals(strength_half(), running_half())
+
+    assert merged["trade_offs"] == "Lifting: calves untouched"
+
+
+def test_merging_survives_a_planner_returning_nothing():
+    """No running target means no running proposal, which is a valid week."""
+    merged = merge_proposals(strength_half(), None)
+
+    assert len(merged["sessions"]) == 2
+    assert all(s["kind"] == "lift" for s in merged["sessions"])
+    assert merge_proposals(None, None) == {"sessions": [], "rationale": "", "trade_offs": ""}
+
+
+def test_merging_does_not_touch_a_distance():
+    merged = merge_proposals(None, running_half())
+
+    assert merged["sessions"][0]["distance_km"] == 6.0
 
 
 # --- the trace -------------------------------------------------------------
@@ -132,25 +259,74 @@ def test_adk_plumbing_is_not_counted_as_a_tool_call():
 # --- assembly --------------------------------------------------------------
 
 
-def test_the_context_reader_runs_before_the_planner(bound):
+def test_the_planners_run_in_order_behind_the_context_reader(bound):
+    """Running placement depends on strength placement, so the order is the
+    design rather than an accident of construction."""
     pytest.importorskip("google.adk", reason="coach extra not installed")
     from fitness_ledger.coach.agent import build_coach
 
     repo, config = bound
     coach = build_coach(repo, config, date(2026, 8, 10))
 
-    assert [child.name for child in coach.sub_agents] == ["context_reader", "week_planner"]
+    assert [child.name for child in coach.sub_agents] == [
+        "context_reader", "strength_planner", "running_planner"
+    ]
 
 
-def test_the_planner_cannot_wander_off(bound):
-    # Nothing to hand off to yet, and an agent that can transfer occasionally
-    # will.
+def test_neither_planner_can_wander_off(bound):
+    # Sequential delegation is the design; an agent that can transfer will
+    # occasionally decide to run the other planner itself.
     pytest.importorskip("google.adk", reason="coach extra not installed")
     from fitness_ledger.coach.agent import build_coach
 
     repo, config = bound
-    planner = build_coach(repo, config).sub_agents[1]
+    _, strength, running = build_coach(repo, config).sub_agents
 
-    assert planner.disallow_transfer_to_parent
-    assert planner.disallow_transfer_to_peers
-    assert planner.output_schema is WeekProposal
+    for planner in (strength, running):
+        assert planner.disallow_transfer_to_parent
+        assert planner.disallow_transfer_to_peers
+
+    assert strength.output_schema is StrengthProposal
+    assert running.output_schema is RunningProposal
+
+
+def test_each_planner_writes_its_own_state_key(bound):
+    """The assembler reads both; sharing one key would make the second
+    planner silently overwrite the first."""
+    pytest.importorskip("google.adk", reason="coach extra not installed")
+    from fitness_ledger.coach.agent import build_coach
+
+    repo, config = bound
+    _, strength, running = build_coach(repo, config).sub_agents
+
+    assert strength.output_key == "strength_proposal"
+    assert running.output_key == "running_proposal"
+
+
+def test_the_running_planner_has_no_tools(bound):
+    """Everything it needs is already in state, and the free tier allows five
+    requests a minute -- each tool round trip is another one."""
+    pytest.importorskip("google.adk", reason="coach extra not installed")
+    from fitness_ledger.coach.agent import build_coach
+
+    repo, config = bound
+    _, strength, running = build_coach(repo, config).sub_agents
+
+    assert running.tools == []
+    assert strength.tools, "the strength planner still needs the exercise pool"
+
+
+def test_an_exercise_may_name_the_id_field_either_way():
+    """The pool once returned "id" while the schema demanded
+    "exercise_template_id", and the model copied the name it was shown -- one
+    wrong key threw away a whole week's plan at validation."""
+    assert PlannedExercise(id="ABC", title="Bench").exercise_template_id == "ABC"
+    assert (
+        PlannedExercise(exercise_template_id="XYZ", title="Row").exercise_template_id
+        == "XYZ"
+    )
+
+
+def test_the_explicit_field_wins_over_the_synonym():
+    exercise = PlannedExercise(exercise_template_id="RIGHT", id="WRONG", title="Row")
+    assert exercise.exercise_template_id == "RIGHT"
