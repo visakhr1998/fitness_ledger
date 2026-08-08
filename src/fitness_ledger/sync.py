@@ -8,7 +8,7 @@ through Hevy's workout-event feed, which is the only place deletions show up.
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, Callable
 
 from . import aei
 from .db import SQLiteRepository, local_date_of
@@ -534,6 +534,53 @@ def _mm_to_m(value: Any) -> float | None:
 def _offset_minutes(value: Any) -> int:
     seconds = _seconds(value)
     return int(seconds // 60) if seconds is not None else 0
+
+
+# --- the whole sync, in one place ------------------------------------------
+
+
+SYNC_STEPS = ("hevy", "exercise points", "daily health", "vitals", "run metrics")
+
+
+async def sync_all(
+    config: Any,
+    repo: SQLiteRepository,
+    *,
+    weeks: int = 12,
+    full: bool = False,
+    on_step: Callable[[str, Any], None] | None = None,
+) -> None:
+    """Run every sync step, in SYNC_STEPS order, for every entry point.
+
+    The CLI and the dashboard each used to list the steps themselves, and the
+    CLI list was two short: vitals and run metrics ran only when someone pressed
+    Sync in the UI. So AEI existed or did not depending on which entry point you
+    happened to use, and a METHOD_VERSION bump -- the documented way to change
+    the AEI method without re-downloading 1.2 MB per run -- silently did not
+    apply from the command line (#16).
+
+    One definition, one order, one place to add the next step. ``on_step``
+    receives each step's name and its return value, so a caller can print it or
+    push it onto a status callout without knowing what the steps are.
+    """
+    from .mcp_client import health_client, hevy_client
+
+    report = on_step or (lambda name, detail: None)
+
+    async with hevy_client(config) as hevy:
+        report("hevy", await sync_hevy(hevy, repo, full=full))
+
+    since = date.today() - timedelta(weeks=weeks)
+    async with health_client(config) as health:
+        report("exercise points", await sync_exercise_points(health, repo, since))
+        report(
+            "daily health",
+            await sync_health_daily(health, repo, since, date.today() + timedelta(days=1)),
+        )
+        report("vitals", await sync_vitals(health, repo))
+        # Last: it is the only step that can need a fresh TCX download, and it
+        # reads the exercise points the earlier steps just cached.
+        report("run metrics", await sync_run_metrics(health, repo))
 
 
 def _civil_date(civil: dict | None) -> date | None:

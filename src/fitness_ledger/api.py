@@ -239,31 +239,12 @@ def _sync_step(name: str, detail: Any = None) -> None:
 
 
 async def _run_sync(weeks: int) -> None:
-    from datetime import date, timedelta
-
-    from .mcp_client import health_client, hevy_client
-    from .sync import (
-        sync_exercise_points,
-        sync_health_daily,
-        sync_hevy,
-        sync_run_metrics,
-        sync_vitals,
-    )
+    from .sync import sync_all
 
     _sync_state.update({"status": "running", "steps": [], "error": None})
     try:
         with repo() as repository:
-            async with hevy_client(_config) as hevy:
-                _sync_step("hevy", await sync_hevy(hevy, repository))
-            since = date.today() - timedelta(weeks=weeks)
-            async with health_client(_config) as health:
-                _sync_step("exercise points", await sync_exercise_points(health, repository, since))
-                _sync_step(
-                    "daily health",
-                    await sync_health_daily(health, repository, since, date.today() + timedelta(days=1)),
-                )
-                _sync_step("vitals", await sync_vitals(health, repository))
-                _sync_step("run metrics", await sync_run_metrics(health, repository))
+            await sync_all(_config, repository, weeks=weeks, on_step=_sync_step)
         _sync_state["status"] = "done"
     except Exception as exc:  # noqa: BLE001 - surface the failure to the callout
         _sync_state["status"] = "error"
