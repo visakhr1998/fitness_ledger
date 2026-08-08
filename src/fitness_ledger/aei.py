@@ -30,7 +30,11 @@ from datetime import date
 from .tcx import Trackpoint
 
 # Bump on any change to the constants or the algorithm below.
-METHOD_VERSION = 1
+#   1 -> 2: beats are totalled from the stored bins in every path. Method 1 had
+#   two definitions -- a fresh fetch totalled the raw samples and undercounted
+#   whenever heart rate was sparser than position, a recompute totalled the bins
+#   and did not -- so a run's AEI depended on which path last wrote it (#11).
+METHOD_VERSION = 2
 
 BIN_DISTANCE_M = 25.0
 MAX_GRADE = 0.30  # clamp; steeper readings are GPS noise, not terrain
@@ -187,22 +191,54 @@ def segment_run(
     return segments
 
 
+def beats_from_segments(segments: list[Segment]) -> float:
+    """Heart beats spent, totalled from the stored bins.
+
+    **This is the canonical definition.** The 25 m bins are what persist, so a
+    recompute under a new METHOD_VERSION has only these to work from; if a fresh
+    computation totalled the raw samples instead, the same run would carry two
+    different beat counts depending on which path last wrote it. That is exactly
+    what happened before method 2 -- see total_beats below.
+    """
+    return sum(
+        (segment.heart_rate or 0.0) * (segment.seconds / 60.0) for segment in segments
+    )
+
+
 def total_beats(points: list[Trackpoint]) -> float:
-    """Heart beats spent: SUM(bpm * minutes) across consecutive samples."""
+    """Heart beats spent, straight from the samples: SUM(bpm * minutes).
+
+    The interval is the time **since the last sample carrying a heart rate**,
+    not since the previous sample. Only ~40% of the trackpoints in a Google
+    Health export have one -- the watch samples heart rate at ~2.5 s against
+    1 Hz GPS -- so measuring back to the previous sample credits ~1 s where
+    ~2.5 s elapsed and silently drops the rest. That undercounted beats by ~59%
+    and inflated AEI ~2.4x on any run computed by this path (issue #11).
+
+    Kept as the independent cross-check on beats_from_segments, which is what
+    production stores; a test pins the two together.
+    """
+    if not points:
+        return 0.0
+
     beats = 0.0
-    for previous, current in zip(points, points[1:]):
-        if current.heart_rate is None:
+    since = points[0].time
+    for point in points:
+        if point.heart_rate is None:
             continue
-        minutes = (current.time - previous.time).total_seconds() / 60.0
+        minutes = (point.time - since).total_seconds() / 60.0
         if minutes > 0:
-            beats += current.heart_rate * minutes
+            beats += point.heart_rate * minutes
+        since = point.time
     return beats
 
 
 def compute(points: list[Trackpoint], local_date: date) -> RunMetrics:
     """Full AEI record for one run."""
     segments = segment_run(points)
-    beats = total_beats(points)
+    # Via the bins, not the raw samples, so a later recompute reproduces this
+    # number exactly rather than approximately.
+    beats = beats_from_segments(segments)
 
     actual = points[-1].distance_m - points[0].distance_m if len(points) >= 2 else 0.0
     adjusted = sum(segment.adjusted_distance_m for segment in segments)
@@ -221,10 +257,16 @@ def compute(points: list[Trackpoint], local_date: date) -> RunMetrics:
 
 
 def from_segments(
-    segments: list[Segment], local_date: date, actual_distance_m: float, beats: float
+    segments: list[Segment], local_date: date, actual_distance_m: float
 ) -> RunMetrics:
-    """Recompute from stored bins, so changing the method needs no re-download."""
+    """Recompute from stored bins, so changing the method needs no re-download.
+
+    Beats are derived here rather than passed in. The caller used to supply
+    them, which is how a wrong total reached storage unchallenged and how the
+    test meant to guard this path came to hand it the answer it was checking.
+    """
     adjusted = sum(segment.adjusted_distance_m for segment in segments)
+    beats = beats_from_segments(segments)
     weighted = [(s.heart_rate, s.seconds) for s in segments if s.heart_rate is not None]
     total_seconds = sum(seconds for _, seconds in weighted)
     avg_hr = (

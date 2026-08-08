@@ -232,11 +232,63 @@ def test_real_run_slice_pins_the_metric():
 
 def test_recompute_from_stored_segments_matches_the_direct_path():
     # This is what lets a method change re-run without re-downloading 1.2 MB.
+    #
+    # It used to pass direct.total_beats into the replay, so the one number that
+    # actually diverged between the two paths was handed over rather than
+    # checked -- which is how #11 shipped. from_segments now derives beats
+    # itself and there is nothing left to hand it.
     points = parse_tcx(FIXTURE.read_text(encoding="utf-8"))
     direct = aei.compute(points, date(2026, 7, 29))
     segments = aei.segment_run(points)
 
-    replayed = aei.from_segments(
-        segments, date(2026, 7, 29), direct.actual_distance_m, direct.total_beats
-    )
+    replayed = aei.from_segments(segments, date(2026, 7, 29), direct.actual_distance_m)
+    assert replayed.total_beats == pytest.approx(direct.total_beats, abs=1e-9)
     assert replayed.aei == pytest.approx(direct.aei, abs=1e-9)
+
+
+# --- sparse heart rate (issue #11) -----------------------------------------
+
+
+def sparse_hr_track(*, minutes: int, bpm: int, hr_every: int):
+    """A run at a steady pace where only every Nth sample carries a heart rate.
+
+    Mirrors a real export: position at 1 Hz, heart rate at ~2.5 s.
+    """
+    samples = minutes * 60
+    return track(
+        seconds=list(range(samples + 1)),
+        distance=[i * 3.0 for i in range(samples + 1)],  # 3 m/s
+        hr=[bpm if i % hr_every == 0 else None for i in range(samples + 1)],
+    )
+
+
+def test_beats_span_the_whole_run_when_heart_rate_is_sparser_than_position():
+    """The #11 regression: 150 bpm for 10 minutes is 1500 beats, however
+    often the watch reported it."""
+    dense = aei.total_beats(sparse_hr_track(minutes=10, bpm=150, hr_every=1))
+    sparse = aei.total_beats(sparse_hr_track(minutes=10, bpm=150, hr_every=3))
+
+    assert dense == pytest.approx(1500.0, abs=1.0)
+    # Method 1 returned a third of this, because two of every three seconds
+    # elapsed between readings and were credited to nobody.
+    assert sparse == pytest.approx(1500.0, abs=5.0)
+
+
+def test_sparse_heart_rate_does_not_move_aei():
+    """AEI is the thing that broke: same run, same effort, same number."""
+    dense = aei.compute(sparse_hr_track(minutes=10, bpm=150, hr_every=1), date(2026, 8, 7))
+    sparse = aei.compute(sparse_hr_track(minutes=10, bpm=150, hr_every=3), date(2026, 8, 7))
+
+    assert sparse.aei == pytest.approx(dense.aei, rel=0.01)
+    assert sparse.avg_heart_rate == pytest.approx(150.0, abs=0.5)
+
+
+def test_the_two_beat_definitions_agree():
+    """beats_from_segments is what production stores; total_beats is the
+    independent measure it must track. Method 1 had them 2.4x apart."""
+    points = parse_tcx(FIXTURE.read_text(encoding="utf-8"))
+    segments = aei.segment_run(points)
+
+    assert aei.beats_from_segments(segments) == pytest.approx(
+        aei.total_beats(points), rel=0.02
+    )
