@@ -143,6 +143,35 @@ All handled in `sync.py` / `mcp_client.py`; don't rediscover them.
 - **Device summaries and GPS tracks disagree.** One session Google Health
   reported as 936 m had a 66 m track; another was a 2-second mis-tap. AEI has
   reliability guards for both, and excluded runs carry a stated reason.
+- **A TCX export carries heart rate on roughly 40% of its trackpoints**, at a
+  steady ~2.5 s cadence against 1 Hz GPS. That is the watch's sampling rate, not
+  a truncated export — do not "fix" it upstream. Any code that sums over time
+  must measure the gap since the last HR-bearing sample, not the previous sample.
+
+## Report upstream bugs upstream
+
+Both MCP servers are ours:
+
+- `github.com/visakhr1998/google-health-mcp-v1`
+- `github.com/visakhr1998/hevy-mcp`
+
+**Whenever data one of them returns is wrong, malformed, or contradicts its own
+schema, open an issue on that repo** — as well as working around it here. Four
+are already filed against the health server (issues #3–#6): plain-text failures
+instead of `isError`, truncated responses returned as invalid JSON, empty pages
+carrying a `nextPageToken`, and `daily_rollup` coupling range to page size.
+
+Two rules, both learned the hard way:
+
+- **Confirm it is the server, not our usage, and not the device.** A candidate
+  was dropped because `INVALID_DATA_POINT_FILTER_DATA_TYPE_RESTRICTION` was never
+  proven to be a server fault rather than a bad request. Sparse heart rate in a
+  TCX looks like a truncated payload and is really the watch's sampling cadence.
+  An unconfirmed report costs more than a gap.
+- **Record the workaround here too**, under *Data source quirks*, so the next
+  session does not rediscover the quirk while waiting for a fix. Every quirk in
+  that list is handled in `sync.py` or `mcp_client.py`; a filed issue does not
+  remove the need for the guard.
 
 ## Working here
 
@@ -208,6 +237,13 @@ session with no prior context can pick this project up. Much of what it holds �
 why ADK was rejected and then accepted, which alternatives were priced and
 dropped, what the numbers in a bug actually were — lives nowhere else, and is
 lost the moment a conversation ends.
+
+**It is git-ignored.** This repo is public and the document carries personal
+figures and absolute paths from the author's machine. Consequences to keep in
+mind: a fresh clone does not have it, so it is a handoff document for *this*
+machine; it has no version history, so a bad edit is unrecoverable; and it is
+not backed up by pushing. Do not re-add it to git, and do not move its content
+into a tracked file to work around that.
 
 **Update it in the same PR as the change**, not afterwards, whenever you:
 
