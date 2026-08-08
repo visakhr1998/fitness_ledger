@@ -205,4 +205,11 @@ async def propose_week(
         "training_days": final.state.get("training_days", []),
         "proposal": final.state.get("week_proposal"),
         "agent_trace": trace,
+        # Carried out of session state rather than re-read, so the assembler
+        # allocates against the same deficit the agent was shown. Gathering it
+        # again would cost nothing in tokens but could differ, and a plan built
+        # from a different deficit than it was argued from is worse than a
+        # slow one.
+        "ledger_state": final.state.get("ledger_state", {}),
+        "exercise_pool": final.state.get("exercise_pool", []),
     }

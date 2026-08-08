@@ -16,9 +16,13 @@ from typing import Iterable, Protocol
 
 from .models import (
     GOAL_STATUSES,
+    PLAN_STATUSES,
     Availability,
     ExerciseTemplate,
     Goal,
+    Plan,
+    PlannedExercise,
+    PlannedSession,
     Run,
     RunningTarget,
     SetEntry,
@@ -187,6 +191,23 @@ CREATE TABLE IF NOT EXISTS writeback_log (
     approved_at  TEXT,
     error        TEXT
 );
+
+-- Proposed training weeks. Append-only: a revision is a new row that
+-- supersedes the old one, never an edit. Why a week looked the way it did is
+-- part of the record, and the coach reads the previous plan to tell a new
+-- shortfall from one that has persisted.
+CREATE TABLE IF NOT EXISTS plans (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    week_start       TEXT NOT NULL,
+    generated_at     TEXT NOT NULL,
+    sessions_json    TEXT NOT NULL,
+    rationale        TEXT,
+    trade_offs       TEXT,
+    status           TEXT NOT NULL DEFAULT 'proposed',
+    supersedes       INTEGER,
+    agent_trace_json TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_plans_week ON plans(week_start, id);
 """
 
 
@@ -212,6 +233,10 @@ class Repository(Protocol):
     def set_running_target(self, target: RunningTarget | None) -> None: ...
     def set_availability(self, entry: Availability) -> None: ...
     def get_availability(self, start: date, end: date) -> dict[date, Availability]: ...
+    def add_plan(self, plan: Plan) -> Plan: ...
+    def get_plan(self, plan_id: int) -> Plan | None: ...
+    def latest_plan(self, week_start: date | None = None) -> Plan | None: ...
+    def set_plan_status(self, plan_id: int, status: str) -> bool: ...
 
 
 class SQLiteRepository:
@@ -738,6 +763,103 @@ class SQLiteRepository:
             (entry.local_date.isoformat(), int(entry.available), entry.reason, entry.source),
         )
         self.conn.commit()
+
+    # --- plans -------------------------------------------------------------
+
+    def add_plan(self, plan: Plan) -> Plan:
+        """Store a plan, superseding any earlier one for the same week.
+
+        Append-only by construction: the previous plan for that week is marked
+        `superseded` and the new row records which one it replaced, so the
+        history of what was proposed and why survives a replan.
+        """
+        generated = plan.generated_at or datetime.now(timezone.utc)
+        previous = self.latest_plan(plan.week_start)
+        supersedes = plan.supersedes
+        if previous is not None and previous.id is not None:
+            supersedes = supersedes or previous.id
+            if previous.status in {"proposed", "approved"}:
+                self.conn.execute(
+                    "UPDATE plans SET status = 'superseded' WHERE id = ?", (previous.id,)
+                )
+
+        cur = self.conn.execute(
+            """INSERT INTO plans (week_start, generated_at, sessions_json, rationale,
+                                  trade_offs, status, supersedes, agent_trace_json)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                plan.week_start.isoformat(),
+                generated.isoformat(),
+                json.dumps([session.as_dict() for session in plan.sessions]),
+                plan.rationale,
+                plan.trade_offs,
+                plan.status,
+                supersedes,
+                json.dumps(list(plan.agent_trace)),
+            ),
+        )
+        self.conn.commit()
+        return replace(
+            plan, id=cur.lastrowid, generated_at=generated, supersedes=supersedes
+        )
+
+    def get_plan(self, plan_id: int) -> Plan | None:
+        row = self.conn.execute("SELECT * FROM plans WHERE id = ?", (plan_id,)).fetchone()
+        return self._plan(row) if row else None
+
+    def latest_plan(self, week_start: date | None = None) -> Plan | None:
+        """The most recent plan, for one week or across all of them."""
+        if week_start is None:
+            row = self.conn.execute(
+                "SELECT * FROM plans ORDER BY week_start DESC, id DESC LIMIT 1"
+            ).fetchone()
+        else:
+            row = self.conn.execute(
+                "SELECT * FROM plans WHERE week_start = ? ORDER BY id DESC LIMIT 1",
+                (week_start.isoformat(),),
+            ).fetchone()
+        return self._plan(row) if row else None
+
+    def set_plan_status(self, plan_id: int, status: str) -> bool:
+        if status not in PLAN_STATUSES:
+            raise ValueError(f"unknown plan status {status!r}")
+        cur = self.conn.execute(
+            "UPDATE plans SET status = ? WHERE id = ?", (status, plan_id)
+        )
+        self.conn.commit()
+        return cur.rowcount > 0
+
+    @staticmethod
+    def _plan(row: sqlite3.Row) -> Plan:
+        sessions = tuple(
+            PlannedSession(
+                local_date=date.fromisoformat(session["date"]),
+                kind=session["kind"],
+                focus=session.get("focus", ""),
+                distance_km=session.get("distance_km"),
+                exercises=tuple(
+                    PlannedExercise(
+                        exercise_template_id=exercise["exercise_template_id"],
+                        title=exercise["title"],
+                        sets=exercise["sets"],
+                        targets=tuple(exercise.get("targets") or []),
+                    )
+                    for exercise in session.get("exercises") or []
+                ),
+            )
+            for session in json.loads(row["sessions_json"])
+        )
+        return Plan(
+            id=row["id"],
+            week_start=date.fromisoformat(row["week_start"]),
+            generated_at=datetime.fromisoformat(row["generated_at"]),
+            sessions=sessions,
+            rationale=row["rationale"] or "",
+            trade_offs=row["trade_offs"] or "",
+            status=row["status"],
+            supersedes=row["supersedes"],
+            agent_trace=tuple(json.loads(row["agent_trace_json"] or "[]")),
+        )
 
     def clear_availability(self, day: date) -> bool:
         """Forget an exception entirely, returning the day to available."""
