@@ -396,12 +396,7 @@ async def sync_run_metrics(
                 for row in stored
             ]
             actual = sum(s.distance_m for s in segments)
-            beats = sum(
-                (s.heart_rate or 0.0) * (s.seconds / 60.0) for s in segments
-            )
-            metrics = aei.from_segments(
-                segments, date.fromisoformat(local_date), actual, beats
-            )
+            metrics = aei.from_segments(segments, date.fromisoformat(local_date), actual)
             ok, reason, coverage = aei.reliability(actual, reported_distance)
             repo.upsert_run_metrics(
                 run_id, metrics, segments,

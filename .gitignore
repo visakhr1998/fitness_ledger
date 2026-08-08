@@ -183,6 +183,13 @@ cython_debug/
 data/
 *.db
 
+# The handoff document stays local. This repo is public and UNDERSTANDING.md
+# carries personal figures (resting HR, body weight, run-by-run heart rate) plus
+# absolute paths from this machine. Untracked, not deleted -- it is still the
+# handoff document, it just lives outside git now, so it has no version history
+# and no backup here. Revisions committed before this point remain in history.
+UNDERSTANDING.md
+
 # Frontend build tooling
 node_modules/
 frontend/dist/
