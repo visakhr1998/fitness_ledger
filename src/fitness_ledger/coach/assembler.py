@@ -11,13 +11,13 @@ a calculation happening outside the tested rules engine.
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 from typing import Any
 
 from ..config import Config
 from ..db import SQLiteRepository
-from ..models import Plan
-from ..planning import Preferences, allocate, validate
+from ..models import WORKING_SET_TYPES, Plan
+from ..planning import Adherence, Preferences, adherence, allocate, validate
 
 # Preference keys in user_settings. Absent means "no opinion", and the defaults
 # in Preferences apply.
@@ -140,3 +140,31 @@ def _trade_offs(stated: str, allocation) -> str:
         names = ", ".join(m.replace("_", " ") for m in allocation.unplaced)
         parts.append(f"No exercise in this week trains: {names}.")
     return " ".join(parts)
+
+
+def plan_adherence(repo: SQLiteRepository, plan) -> Adherence:
+    """How much of a stored plan was actually trained.
+
+    The gathering half: reads the logged week out of the cache and hands it to
+    the pure comparison in planning.py. Everything below the read is arithmetic
+    the rules engine owns.
+    """
+    if plan is None or not plan.sessions:
+        return Adherence(week_start=date.min)
+
+    start = min(session.local_date for session in plan.sessions)
+    end = max(session.local_date for session in plan.sessions) + timedelta(days=1)
+
+    logged_by_day: dict[date, dict[str, int]] = {}
+    for entry in repo.get_sets(start, end):
+        if entry.set_type not in WORKING_SET_TYPES or not entry.exercise_template_id:
+            continue
+        day = logged_by_day.setdefault(entry.local_date, {})
+        day[entry.exercise_template_id] = day.get(entry.exercise_template_id, 0) + 1
+
+    run_days = {
+        run.local_date
+        for run in repo.get_runs(start, end)
+        if run.exercise_type in {"RUNNING", "TREADMILL"}
+    }
+    return adherence(plan.sessions, logged_by_day, run_days, today=date.today())
