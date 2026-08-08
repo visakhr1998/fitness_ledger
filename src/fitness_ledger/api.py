@@ -82,9 +82,21 @@ def get_progression() -> list[dict[str, Any]]:
 
 
 @app.get("/api/insights")
-def get_insights() -> list[dict[str, Any]]:
+def get_insights() -> dict[str, Any]:
+    """Findings, plus the scope they were found over.
+
+    The scope travels with them because the coach strip sits under the
+    time-horizon filter and obeys neither it nor the section tabs. It reports
+    the window rather than letting the UI name a period of its own, which would
+    drift from `insight_window` the first time either changed.
+    """
+    start, end = queries.insight_window()
     with repo() as repository:
-        return queries.insight_report(repository, _config)
+        return {
+            "window": queries.describe_window(start, end),
+            "weeks": queries.INSIGHT_LOOKBACK_WEEKS,
+            "insights": queries.insight_report(repository, _config),
+        }
 
 
 @app.get("/api/exercise/{exercise}")

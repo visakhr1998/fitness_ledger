@@ -12,7 +12,7 @@ from datetime import date, timedelta
 import pytest
 from fastapi.testclient import TestClient
 
-from fitness_ledger import api
+from fitness_ledger import api, queries
 from fitness_ledger.db import SQLiteRepository
 from fitness_ledger.models import ExerciseTemplate, VolumeTarget
 
@@ -81,6 +81,33 @@ def test_volume_endpoint_excludes_warmups(client):
     assert body["working_sets"] == 3
 
 
+def test_insights_report_the_scope_they_were_found_over(client):
+    """The coach strip obeys neither the section tabs nor the filter (#14).
+
+    It says so, using the window the rules actually read rather than a period
+    named in the UI, so the label cannot drift from `insight_window`.
+    """
+    body = client.get("/api/insights").json()
+
+    assert set(body) == {"window", "weeks", "insights"}
+    assert body["weeks"] == queries.INSIGHT_LOOKBACK_WEEKS
+    assert isinstance(body["insights"], list)
+
+    start, end = queries.insight_window()
+    assert body["window"] == queries.describe_window(start, end)
+    # The span is the rules', not the dashboard's default.
+    assert (end - start).days == queries.INSIGHT_LOOKBACK_WEEKS * 7 + 1
+
+
+def test_insight_window_ignores_the_time_horizon_filter(client):
+    """Passing a filter must not narrow it: a rule on one part-finished week
+    fires on nothing, so scaling these to 7 days would silence them."""
+    plain = client.get("/api/insights").json()
+    filtered = client.get("/api/insights", params={"window": "last-7-days"}).json()
+
+    assert filtered["window"] == plain["window"]
+
+
 def test_bad_window_is_a_400_not_a_500(client):
     res = client.get("/api/volume", params={"window": "whenever"})
     assert res.status_code == 400
@@ -115,7 +142,7 @@ def test_rep_range_changes_progression_verdict(client):
 
 
 def test_insights_flag_the_stalled_lift(client):
-    rules = {i["rule"] for i in client.get("/api/insights").json()}
+    rules = {i["rule"] for i in client.get("/api/insights").json()["insights"]}
     assert "stall" in rules
 
 
