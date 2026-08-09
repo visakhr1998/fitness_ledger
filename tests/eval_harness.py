@@ -66,7 +66,14 @@ MIN_SECONDS_BETWEEN_RUNS = 13.0
 QUOTA_RETRIES = 3
 DEFAULT_RETRY_WAIT = 25.0
 
+# Stop after this many fixtures in a row fail on quota. A daily cap does not
+# recover in twenty-five seconds, so retrying every remaining fixture only buys
+# a slower way to learn the same thing: the first full run on gemini-3.6-flash
+# spent **two hours and nine minutes** discovering that nothing would run.
+QUOTA_GIVE_UP_AFTER = 2
+
 _last_started = 0.0
+_consecutive_quota_failures = 0
 
 
 class QuotaExhausted(RuntimeError):
@@ -161,22 +168,39 @@ def run(name: str, tmp_root: Path, attempt: int = 0) -> EvalRun:
     if (name, attempt) in _cache:
         return _cache[(name, attempt)]
 
+    global _consecutive_quota_failures
+
+    if _consecutive_quota_failures >= QUOTA_GIVE_UP_AFTER:
+        raise QuotaExhausted(
+            f"giving up: {_consecutive_quota_failures} fixtures in a row hit quota. "
+            "Nothing here is measuring the coach."
+        )
+
     last: BaseException | None = None
     for retry in range(QUOTA_RETRIES):
         _pace()
         try:
-            return _plan_once(name, tmp_root, attempt)
+            planned = _plan_once(name, tmp_root, attempt)
         except Exception as exc:  # noqa: BLE001 - re-raised unless it is quota
             if not _is_quota_error(exc):
                 raise
             last = exc
             if retry < QUOTA_RETRIES - 1:
                 time.sleep(_retry_after(exc))
+        else:
+            _consecutive_quota_failures = 0
+            return planned
 
+    _consecutive_quota_failures += 1
     raise QuotaExhausted(
         f"{name} (attempt {attempt}) could not be planned after {QUOTA_RETRIES} "
         f"tries: {last}"
     )
+
+
+def completed() -> int:
+    """How many runs actually happened. Zero means the suite proved nothing."""
+    return len(_cache)
 
 
 def _plan_once(name: str, tmp_root: Path, attempt: int) -> EvalRun:
