@@ -21,6 +21,8 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
+import time
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
@@ -53,6 +55,47 @@ MAX_TOOL_CALLS = 2
 # to itself the agent called it with `this-week`, a barely-started week where
 # every muscle reads a full target short, and planned against that.
 FORBIDDEN_TOOLS = frozenset({"get_volume_vs_target", "get_neglected"})
+
+
+# Measured, the hard way: gemini-3.5-flash-lite allows **15 requests a minute**.
+# A run costs about three, so the harness can start roughly one run every 13
+# seconds and no faster. Fired back to back the suite exhausts the minute in
+# seconds and every fixture after the fifth fails -- and fails *as though the
+# coach misbehaved*, which is the worse half of the problem.
+MIN_SECONDS_BETWEEN_RUNS = 13.0
+QUOTA_RETRIES = 3
+DEFAULT_RETRY_WAIT = 25.0
+
+_last_started = 0.0
+
+
+class QuotaExhausted(RuntimeError):
+    """The API refused, so this fixture has no result -- of any kind.
+
+    Distinct from an assertion failure on purpose. "The coach planned on a day
+    it was told it could not use" and "the coach never got to plan" are
+    different findings, and reporting the second as the first would send someone
+    debugging a prompt over a rate limit.
+    """
+
+
+def _is_quota_error(exc: BaseException) -> bool:
+    return "RESOURCE_EXHAUSTED" in str(exc) or "429" in str(exc)
+
+
+def _retry_after(exc: BaseException) -> float:
+    """The server says how long to wait; believe it rather than guessing."""
+    match = re.search(r"retry in ([\d.]+)s", str(exc))
+    return float(match.group(1)) + 1.0 if match else DEFAULT_RETRY_WAIT
+
+
+def _pace() -> None:
+    """Hold the floor between runs so the minute is never spent at once."""
+    global _last_started
+    wait = MIN_SECONDS_BETWEEN_RUNS - (time.monotonic() - _last_started)
+    if wait > 0:
+        time.sleep(wait)
+    _last_started = time.monotonic()
 
 
 def enabled() -> bool:
@@ -108,21 +151,42 @@ class EvalRun:
         )
 
 
-_cache: dict[str, EvalRun] = {}
+# Keyed by (fixture, attempt) so repeats are distinct runs but each is still
+# fetched once however many assertions read it.
+_cache: dict[tuple[str, int], EvalRun] = {}
 
 
-def run(name: str, tmp_root: Path) -> EvalRun:
-    """Plan one fixture week. Cached, because each call costs model requests."""
-    if name in _cache:
-        return _cache[name]
+def run(name: str, tmp_root: Path, attempt: int = 0) -> EvalRun:
+    """Plan one fixture week, paced and retried. Cached: each call costs quota."""
+    if (name, attempt) in _cache:
+        return _cache[(name, attempt)]
 
+    last: BaseException | None = None
+    for retry in range(QUOTA_RETRIES):
+        _pace()
+        try:
+            return _plan_once(name, tmp_root, attempt)
+        except Exception as exc:  # noqa: BLE001 - re-raised unless it is quota
+            if not _is_quota_error(exc):
+                raise
+            last = exc
+            if retry < QUOTA_RETRIES - 1:
+                time.sleep(_retry_after(exc))
+
+    raise QuotaExhausted(
+        f"{name} (attempt {attempt}) could not be planned after {QUOTA_RETRIES} "
+        f"tries: {last}"
+    )
+
+
+def _plan_once(name: str, tmp_root: Path, attempt: int) -> EvalRun:
     from dataclasses import replace
 
     from fitness_ledger.coach.agent import propose_week
     from fitness_ledger.coach.assembler import assemble
     from fitness_ledger.coach.context import gather_context, next_monday
 
-    db = Path(tmp_root) / f"eval-{name}.db"
+    db = Path(tmp_root) / f"eval-{name}-{attempt}.db"
     config = replace(Config.load(), db_path=db)
     week = next_monday()
 
@@ -132,7 +196,7 @@ def run(name: str, tmp_root: Path) -> EvalRun:
         result = asyncio.run(propose_week(repo, config, week))
         assembled = assemble(repo, config, result, persist=False)
 
-    _cache[name] = EvalRun(
+    _cache[(name, attempt)] = EvalRun(
         fixture=fixtures.BY_NAME[name],
         week_start=week,
         context=context,
@@ -143,7 +207,7 @@ def run(name: str, tmp_root: Path) -> EvalRun:
         unplaced=assembled["unplaced"],
         trace=result.get("agent_trace") or [],
     )
-    return _cache[name]
+    return _cache[(name, attempt)]
 
 
 def deficits(context: dict[str, Any]) -> dict[str, float]:
@@ -159,3 +223,73 @@ def worst_deficits(context: dict[str, Any], count: int = 3) -> list[str]:
     """The muscles a correct plan is most obliged to address."""
     short = deficits(context)
     return sorted(short, key=lambda muscle: short[muscle], reverse=True)[:count]
+
+
+# --- scoring ----------------------------------------------------------------
+
+# How many times a judgement fixture is replanned. Three is the smallest number
+# that distinguishes "always", "usually" and "never"; raise it when the quota is
+# known to allow more, since the resolution of a k-of-N score is entirely N.
+REPEATS = int(os.environ.get("COACH_EVAL_REPEATS", "3"))
+
+
+@dataclass(frozen=True)
+class Score:
+    """How often a judgement held, rather than whether it held once.
+
+    A judgement that survives four runs in five is *information*. Turning that
+    into a pass/fail assertion discards it in both directions: green hides the
+    one failure, red hides the four successes.
+    """
+
+    name: str
+    fixture: str
+    passed: int
+    total: int
+    failures: tuple[str, ...] = ()
+
+    @property
+    def ratio(self) -> str:
+        return f"{self.passed}/{self.total}"
+
+    @property
+    def never(self) -> bool:
+        """Zero for N is not drift. Something is actually wrong."""
+        return self.total > 0 and self.passed == 0
+
+    def line(self) -> str:
+        mark = "  <-- never" if self.never else ("  <-- weak" if self.passed < self.total else "")
+        return f"  {self.name:34} {self.fixture:18} {self.ratio:>5}{mark}"
+
+
+def repeat(name: str, tmp_root: Path, times: int | None = None) -> list[EvalRun]:
+    """Plan the same fixture several times.
+
+    A run lost to quota is dropped rather than counted as a failure: scoring
+    2-of-3 when the third never happened would report a judgement problem that
+    is really a budget one.
+    """
+    runs = []
+    for attempt in range(times or REPEATS):
+        try:
+            runs.append(run(name, tmp_root, attempt))
+        except QuotaExhausted:
+            break
+    return runs
+
+
+def score(label: str, fixture: str, runs: list[EvalRun], holds) -> Score:
+    """Count how often `holds(run)` is true, keeping the failures readable."""
+    failures = []
+    passed = 0
+    for index, one in enumerate(runs):
+        try:
+            ok = bool(holds(one))
+        except Exception as exc:  # noqa: BLE001 - a raising predicate is a failure
+            ok = False
+            failures.append(f"run {index}: {type(exc).__name__}: {exc}")
+        else:
+            if not ok:
+                failures.append(f"run {index}: {one.summary().strip()}")
+        passed += int(ok)
+    return Score(label, fixture, passed, len(runs), tuple(failures))
