@@ -20,6 +20,7 @@ from ..models import Plan
 from ..planning import allocate, validate
 from ..queries import plan_adherence, planning_preferences  # noqa: F401  (re-export)
 
+
 def deficits(ledger_state: dict[str, Any]) -> dict[str, float]:
     """Sets short per muscle group, straight from the volume tool.
 
@@ -32,6 +33,20 @@ def deficits(ledger_state: dict[str, Any]) -> dict[str, float]:
         row["muscle_group"]: row["sets_deficit"] or 0.0
         for row in muscles
         if (row.get("sets_deficit") or 0) > 0
+    }
+
+
+def weekly_targets(ledger_state: dict[str, Any]) -> dict[str, float]:
+    """Sets per week per muscle -- the amount a plan should deliver.
+
+    Scaled to the planning window by `volume.coverage`, which for `last-week`
+    is one week, so these are weekly figures as they stand.
+    """
+    muscles = (ledger_state or {}).get("volume", {}).get("muscles", [])
+    return {
+        row["muscle_group"]: row["target_sets"] or 0.0
+        for row in muscles
+        if (row.get("target_sets") or 0) > 0
     }
 
 
@@ -62,10 +77,12 @@ def assemble(
     week_start = date.fromisoformat(result["week_start"])
     prefs = planning_preferences(repo)
 
+    ledger = result.get("ledger_state") or {}
     allocation = allocate(
-        proposal.get("sessions") or [],
-        deficits(result.get("ledger_state") or {}),
+        with_targets(proposal.get("sessions") or [], result.get("exercise_pool")),
+        weekly_targets(ledger),
         prefs,
+        deficits=deficits(ledger),
     )
     problems = validate(
         allocation.sessions,
@@ -113,3 +130,49 @@ def _trade_offs(stated: str, allocation) -> str:
         names = ", ".join(m.replace("_", " ") for m in allocation.unplaced)
         parts.append(f"No exercise in this week trains: {names}.")
     return " ".join(parts)
+
+
+def with_targets(
+    sessions: list[dict[str, Any]], exercise_pool: list[dict[str, Any]] | None
+) -> list[dict[str, Any]]:
+    """Fill in the muscles an exercise serves when the agent left them out.
+
+    Allocation works from `targets`: an exercise serving nothing is short of
+    nothing, gets zero sets, and is dropped. So an agent that names an exercise
+    but forgets its muscles loses it silently -- observed in a real run, which
+    proposed `Calf Raise` with `targets=[]` and ended up with a week of four
+    sets.
+
+    We already know the answer. The exercise came from the pool, and the pool
+    carries the primary and secondary muscles for every entry. Looking it up is
+    strictly better than discarding the choice, and it is not the agent doing
+    arithmetic -- the muscles come from the catalog, same as everything else.
+    """
+    by_id = {
+        row.get("exercise_template_id") or row.get("id"): row
+        for row in exercise_pool or []
+    }
+    if not by_id:
+        return sessions
+
+    filled = []
+    for session in sessions:
+        exercises = []
+        for exercise in session.get("exercises") or []:
+            if not (exercise.get("targets") or []):
+                known = by_id.get(exercise.get("exercise_template_id"))
+                if known:
+                    exercise = {
+                        **exercise,
+                        "targets": [
+                            muscle
+                            for muscle in (
+                                known.get("primary_muscle_group"),
+                                *(known.get("secondary_muscle_groups") or ()),
+                            )
+                            if muscle
+                        ],
+                    }
+            exercises.append(exercise)
+        filled.append({**session, "exercises": exercises})
+    return filled

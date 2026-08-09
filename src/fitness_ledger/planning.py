@@ -80,8 +80,10 @@ class Allocation:
 
 def allocate(
     proposal_sessions: list[dict],
-    deficits: dict[str, float],
+    targets: dict[str, float],
     preferences: Preferences | None = None,
+    *,
+    deficits: dict[str, float] | None = None,
 ) -> Allocation:
     """Compute set counts for a proposed week.
 
@@ -90,40 +92,73 @@ def allocate(
     and the muscle groups it is there to serve. No set counts -- there is no
     field for one.
 
-    The rule is one line: **an exercise gets the sets its neediest target
-    needs, shared with whatever else serves that target.** Concretely, a muscle
-    short 9 sets across three exercises gives each of them 3; an exercise
-    serving two muscles takes the larger of its two shares rather than the sum,
-    because one set of a press serves chest and triceps at once and adding them
-    would count the same set twice.
+    **The amount comes from the weekly target, not from last week's shortfall.**
+    An earlier version allocated the deficit, which quietly punished
+    consistency: chest at 10 of a 14-set target got a 4-set week, and someone
+    who hit the target exactly got a week with nothing in it. A deficit says how
+    far behind you fell; it was never the amount to train.
+
+    The rule is one line: **an exercise gets the sets its neediest target needs,
+    shared with whatever else serves that target.** A muscle wanting 12 sets
+    across three exercises gives each of them 4; an exercise serving two muscles
+    takes the larger of its two shares rather than the sum, because one set of a
+    press serves chest and triceps at once and adding them would count the same
+    set twice.
+
+    `deficits` does not change any amount. It ranks: when a session will not fit
+    under its ceiling, the sets that survive are the ones serving whatever is
+    furthest behind. That is the priority order -- volume per muscle group
+    first -- applied where it actually bites.
     """
     prefs = preferences or Preferences()
-    short = {m: d for m, d in deficits.items() if d and d > 0}
+    wanted = {m: t for m, t in targets.items() if t and t > 0}
+    behind = {m: d for m, d in (deficits or {}).items() if d and d > 0}
 
     lift_sessions = [s for s in proposal_sessions if s.get("kind") != "run"]
     servers = _exercises_by_muscle(lift_sessions)
 
-    # Each muscle's deficit, split evenly across the exercises chosen for it.
+    # Each muscle's weekly target, split evenly across the exercises chosen for
+    # it. Only muscles this week actually serves get a share: the agent decides
+    # what the week is about, and allocating for a muscle it did not choose
+    # would be planning on its behalf.
     share: dict[tuple[int, int], float] = {}
-    unplaced = []
-    for muscle, deficit in sorted(short.items()):
+    for muscle, target in sorted(wanted.items()):
         serving = servers.get(muscle, [])
         if not serving:
-            unplaced.append(muscle)
             continue
-        per = deficit / len(serving)
+        per = target / len(serving)
         for key in serving:
             share[key] = max(share.get(key, 0.0), per)
 
-    sessions, delivered = _build_sessions(proposal_sessions, share, prefs)
+    # What each exercise is worth when the week runs out of room: the largest
+    # shortfall among the muscles it serves. Nothing behind ranks zero.
+    priority = {
+        key: max((behind.get(muscle, 0.0) for muscle in muscles), default=0.0)
+        for key, muscles in _muscles_by_exercise(lift_sessions).items()
+    }
 
+    sessions, delivered = _build_sessions(proposal_sessions, share, prefs, priority)
+
+    # Reporting stays in deficit terms. "Still short 4 sets of what you missed"
+    # is actionable; "short of a full target you were never going to hit in one
+    # week" is noise, and every muscle carries a target.
     unmet = {}
-    for muscle, deficit in sorted(short.items()):
+    for muscle, deficit in sorted(behind.items()):
         remaining = deficit - delivered.get(muscle, 0.0)
         if remaining > 0.5:  # sub-half-set remainders are rounding, not a gap
             unmet[muscle] = round(remaining, 1)
 
-    return Allocation(sessions=tuple(sessions), unmet=unmet, unplaced=tuple(unplaced))
+    unplaced = tuple(muscle for muscle in sorted(behind) if not servers.get(muscle))
+    return Allocation(sessions=tuple(sessions), unmet=unmet, unplaced=unplaced)
+
+
+def _muscles_by_exercise(lift_sessions: list[dict]) -> dict[tuple[int, int], list[str]]:
+    """The inverse of _exercises_by_muscle, for ranking."""
+    return {
+        (si, ei): list(exercise.get("targets") or [])
+        for si, session in enumerate(lift_sessions)
+        for ei, exercise in enumerate(session.get("exercises") or [])
+    }
 
 
 def _exercises_by_muscle(lift_sessions: list[dict]) -> dict[str, list[tuple[int, int]]]:
@@ -137,7 +172,10 @@ def _exercises_by_muscle(lift_sessions: list[dict]) -> dict[str, list[tuple[int,
 
 
 def _build_sessions(
-    proposal_sessions: list[dict], share: dict[tuple[int, int], float], prefs: Preferences
+    proposal_sessions: list[dict],
+    share: dict[tuple[int, int], float],
+    prefs: Preferences,
+    priority: dict[tuple[int, int], float] | None = None,
 ) -> tuple[list[PlannedSession], dict[str, float]]:
     """Round shares into whole sets, hold the per-session ceiling, and report
     how much volume each muscle actually receives."""
@@ -166,7 +204,11 @@ def _build_sessions(
             raw = share.get((lift_index, ei), 0.0)
             counts.append(_clamp_sets(raw, prefs))
 
-        counts = _fit_session(counts, prefs.max_sets_per_session)
+        counts = _fit_session(
+            counts,
+            prefs.max_sets_per_session,
+            [(priority or {}).get((lift_index, ei), 0.0) for ei in range(len(counts))],
+        )
 
         exercises = tuple(
             PlannedExercise(
@@ -206,18 +248,30 @@ def _clamp_sets(raw: float, prefs: Preferences) -> int:
     return max(prefs.min_sets_per_exercise, min(prefs.max_sets_per_exercise, round(raw)))
 
 
-def _fit_session(counts: list[int], ceiling: int) -> list[int]:
-    """Trim a session to its ceiling, taking from the largest first.
+def _fit_session(
+    counts: list[int], ceiling: int, priority: list[float] | None = None
+) -> list[int]:
+    """Trim a session to its ceiling, protecting what is furthest behind.
 
-    Largest-first rather than proportionally, so trimming never pushes an
-    exercise below the minimum that made it worth including.
+    Takes from the least-behind, largest exercise first: a set removed from a
+    muscle already on target costs less than one removed from a muscle three
+    weeks neglected. That is the priority ranking -- volume per muscle group
+    ahead of everything else -- applied at the only point where the week is
+    actually forced to choose.
+
+    Largest-first within a priority band rather than proportionally, so trimming
+    never pushes an exercise below the minimum that made it worth including.
     """
     if ceiling <= 0 or sum(counts) <= ceiling:
         return counts
 
     counts = list(counts)
+    ranks = priority or [0.0] * len(counts)
     while sum(counts) > ceiling:
-        biggest = max(range(len(counts)), key=lambda i: counts[i])
+        biggest = min(
+            range(len(counts)),
+            key=lambda i: (ranks[i], -counts[i]) if counts[i] > 0 else (float("inf"), 0),
+        )
         if counts[biggest] <= MIN_SETS_PER_EXERCISE:
             # Everything is at the floor; drop the last exercise entirely
             # rather than return a session that breaks its own ceiling.
