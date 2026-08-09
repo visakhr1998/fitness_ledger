@@ -203,3 +203,43 @@ def test_the_catalog_can_train_every_muscle_that_has_a_target():
         covered |= set(template.secondary_muscle_groups)
 
     assert not set(default_targets()) - covered
+
+
+# --- the pool the coach is handed -------------------------------------------
+
+
+def test_the_pool_offers_something_for_every_muscle_that_is_short(repo, config):
+    """The bug an eval found: the default pool is what the user has *logged*,
+    so a muscle never trained has no exercises in it -- and those are exactly
+    the muscles most likely to be neglected. The coach was asked to fix a
+    three-week back gap while holding a list with no back exercises, and
+    planned a squat."""
+    context = seeded(repo, config, "back_neglected")
+
+    covered = {
+        muscle
+        for row in context["exercise_pool"]
+        for muscle in (row["primary_muscle_group"], *row["secondary_muscle_groups"])
+    }
+    short = set(deficits(context))
+
+    assert not short - covered, f"nothing in the pool trains {sorted(short - covered)}"
+
+
+def test_the_pool_still_leads_with_what_is_actually_trained(repo, config):
+    """The logged exercises stay, and stay first. The additions are a floor,
+    not a replacement -- a pool reordered around gaps would bury the lifts the
+    user actually does."""
+    context = seeded(repo, config, "back_neglected")
+    titles = [row["title"] for row in context["exercise_pool"]]
+
+    assert titles[:4] == ["Bench Press", "Squat", "Calf Raise", "Overhead Press"]
+    assert "Lat Pulldown" in titles
+
+
+def test_a_pool_with_no_gaps_is_left_alone(repo, config):
+    """Nothing is short, so nothing is added."""
+    context = seeded(repo, config, "all_targets_met")
+
+    ids = [row["exercise_template_id"] for row in context["exercise_pool"]]
+    assert len(ids) == len(set(ids))
