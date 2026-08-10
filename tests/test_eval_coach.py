@@ -6,6 +6,14 @@ off within a week.
 
     RUN_COACH_EVALS=1 ./.venv/Scripts/python.exe -m pytest tests/test_eval_coach.py -v
 
+**Run this about once a month, not per change.** A full pass needs ~54 requests
+and the free tier will not carry it more often -- the first attempt on
+gemini-3.6-flash refused all ten fixtures and took two hours to say so. That is
+an accepted limitation, decided 2026-08-08, and the reason the suite is opt-in
+rather than part of `pytest`. If it ever needs to run per-change, the answer is
+a paid provider (DeepSeek was costed at roughly $0.0015 a plan), not a looser
+assertion.
+
 ## Why this file has two halves
 
 Temperature 0 does not make this provider repeatable. Measured on one fixture

@@ -202,6 +202,26 @@ Expectations for changes:
 - **Before writing any chart code**, load the `dataviz` skill and run its palette
   validator. Never eyeball colourblind safety. Every chart needs a table twin.
 
+## The coach's model
+
+`GEMINI_MODEL=gemini-3.6-flash`, decided 2026-08-08 after testing every free
+option against the same eval fixture -- three weeks with no back work.
+
+- `gemini-3.5-flash-lite` planned **two squats, 4 sets**, no back, twice. Too
+  weak, whatever its rate limit.
+- `gemini-3.5-flash` plans well on **20 requests a day**: about two runs.
+- `gemini-2.5-flash` returns **404, "no longer available to new users"**.
+- `gemini-3.6-flash` planned 4 sessions and 64 sets, opening with a Lat
+  Pulldown. Stable across runs.
+
+**Nothing may assume a model id.** One became unavailable mid-project; the
+provider indirection in `llm.py` is what made that survivable.
+
+**Coach evals run about monthly.** No free model has both the quality to plan
+and the quota to sustain a full pass (~54 requests). If they need to run more
+often, the answer is a paid provider -- DeepSeek is costed at roughly $0.0015
+per plan in `UNDERSTANDING.md` -- and never a looser assertion.
+
 ## Repo conventions
 
 - **Every change goes through a pull request.** Create a branch → make commits →
