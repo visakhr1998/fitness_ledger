@@ -137,13 +137,12 @@ Continuity -- what you said last time, and what became of it:
 {continuity_summary}
 
 That shortfall is what this week has to close. It is already measured over one
-complete week, so do not call get_volume_vs_target to recompute it and do not
-pick your own window -- a part-finished week reads as a full target short and
-would send you planning against a shortfall that is not real.
+complete week, and there is deliberately no tool to recompute it: picking your
+own window gives a part-finished week that reads as a full target short, and a
+plan built on that shortfall is built on nothing.
 
-Use get_exercise_pool to see what exists, and get_progression_state if you need
-to know whether a lift is due to go up. Only call other tools if you actually
-need something the above does not give you; each call costs time.
+You have two tools. get_exercise_pool shows what exists; get_progression_state
+says whether a lift is due to go up. Everything else you need is above.
 
 Rules you must not break:
 
@@ -366,7 +365,18 @@ def build_coach(
     from google.genai import types
 
     week = week_start or next_monday()
-    tools = build_tools(repo, config)
+
+    # Only the two the strength planner cannot get from injected state. The
+    # deficit, goals, availability, recovery, insights and the previous plan
+    # are all already in the prompt, so every other tool is a way to re-fetch
+    # something it was handed -- and three of ten runs took it, calling
+    # get_volume_vs_target despite an instruction not to.
+    #
+    # Removing them beats repeating the instruction. Choosing its own window is
+    # how the planner once planned against a fabricated shortfall, and a rule
+    # the model *can* break is one that eventually gets broken.
+    allowed = {"get_exercise_pool", "get_progression_state"}
+    tools = [tool for tool in build_tools(repo, config) if tool.__name__ in allowed]
     sampling = types.GenerateContentConfig(temperature=PLANNER_TEMPERATURE)
 
     strength = LlmAgent(

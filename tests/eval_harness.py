@@ -323,7 +323,21 @@ def repeat(name: str, tmp_root: Path, times: int | None = None) -> list[EvalRun]
             runs.append(run(name, tmp_root, attempt))
         except QuotaExhausted:
             break
+        except Exception as exc:  # noqa: BLE001 - a failed run is a failed sample
+            # One bad run must not destroy every score. This lives in a
+            # session fixture, so an exception here took out all six scores
+            # across all four fixtures -- twelve runs of evidence discarded
+            # because one proposal failed schema validation.
+            #
+            # A model that returns something unusable has failed the judgement.
+            # That is a data point, not a reason to stop measuring.
+            failures.setdefault(name, []).append(f"attempt {attempt}: {exc}")
     return runs
+
+
+# Runs that raised rather than returning a plan, kept so the report can say how
+# many samples were lost and why.
+failures: dict[str, list[str]] = {}
 
 
 def models_used(runs: list[EvalRun]) -> str:

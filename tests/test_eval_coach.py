@@ -237,6 +237,14 @@ def test_judgement_scores(judged, capsys):
                 print(f"    {score.name}: {failure}")
         print()
 
+    if eval_harness.failures:
+        with capsys.disabled():
+            print("RUNS THAT DID NOT PRODUCE A PLAN")
+            for fixture, reasons in sorted(eval_harness.failures.items()):
+                for reason in reasons:
+                    print(f"  {fixture}: {reason[:160]}")
+            print()
+
     never = [score for score in scores if score.never]
     assert not never, "never held in any run: " + ", ".join(s.name for s in never)
 

@@ -348,3 +348,23 @@ def test_both_planners_sample_deterministically(bound):
     assert PLANNER_TEMPERATURE == 0.0
     for planner in (strength, running):
         assert planner.generate_content_config.temperature == PLANNER_TEMPERATURE
+
+
+def test_the_strength_planner_cannot_recompute_the_deficit(bound):
+    """Three of ten runs called get_volume_vs_target despite being told not to.
+
+    Removing the tool beats repeating the instruction: choosing its own window
+    is how the planner once planned against a fabricated shortfall, and a rule
+    the model *can* break is one that eventually gets broken. Everything it
+    would have fetched is already injected.
+    """
+    pytest.importorskip("google.adk", reason="coach extra not installed")
+    from fitness_ledger.coach.agent import build_coach
+
+    repo, config = bound
+    _, strength, _ = build_coach(repo, config).sub_agents
+
+    names = {getattr(t, "__name__", getattr(getattr(t, "func", None), "__name__", "")) for t in strength.tools}
+    assert names == {"get_exercise_pool", "get_progression_state"}
+    assert "get_volume_vs_target" not in names
+    assert "get_neglected" not in names
