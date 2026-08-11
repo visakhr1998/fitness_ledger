@@ -79,3 +79,69 @@ def test_a_model_belonging_to_another_provider_is_ignored():
         config(gemini_api_key="k", llm_provider="ollama", llm_model="qwen3:4b")
     )
     assert model == "gemini-2.5-flash"
+
+
+# --- providers that are not Gemini ------------------------------------------
+
+
+def test_an_openai_compatible_provider_becomes_a_litellm_model():
+    """ADK speaks Gemini natively and reaches everything else through LiteLLM.
+    One config switch moves both the dock and the coach."""
+    pytest.importorskip("litellm", reason="coach extra not installed")
+    from dataclasses import replace
+
+    from fitness_ledger.coach import configure_adk_environment
+    from fitness_ledger.config import Config
+
+    model = configure_adk_environment(
+        replace(
+            Config.load(),
+            llm_provider="openai-compatible",
+            llm_base_url="https://api.deepseek.com",
+            llm_model="deepseek-v4-flash",
+            llm_api_key="not-a-real-key",
+        )
+    )
+
+    # `openai/` tells LiteLLM to treat the endpoint as OpenAI-shaped and honour
+    # api_base. Naming the vendor instead makes it ignore api_base and route to
+    # that vendor's default host -- wrong the moment the endpoint is a proxy.
+    assert model.model == "openai/deepseek-v4-flash"
+
+
+def test_gemini_is_still_a_plain_model_id():
+    """The default path must not start depending on LiteLLM."""
+    from fitness_ledger.coach import configure_adk_environment
+    from fitness_ledger.config import Config
+
+    assert isinstance(configure_adk_environment(Config.load()), str)
+
+
+def test_an_openai_compatible_provider_without_a_url_says_so():
+    from dataclasses import replace
+
+    from fitness_ledger.coach import CoachUnavailable, configure_adk_environment
+    from fitness_ledger.config import Config
+
+    with pytest.raises(CoachUnavailable, match="LLM_BASE_URL"):
+        configure_adk_environment(
+            replace(Config.load(), llm_provider="openai-compatible", llm_base_url="")
+        )
+
+
+def test_an_openai_compatible_provider_without_a_key_says_so():
+    from dataclasses import replace
+
+    from fitness_ledger.coach import CoachUnavailable, configure_adk_environment
+    from fitness_ledger.config import Config
+
+    with pytest.raises(CoachUnavailable, match="LLM_API_KEY"):
+        configure_adk_environment(
+            replace(
+                Config.load(),
+                llm_provider="openai-compatible",
+                llm_base_url="https://api.deepseek.com",
+                llm_model="deepseek-v4-flash",
+                llm_api_key="",
+            )
+        )
