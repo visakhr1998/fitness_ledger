@@ -111,3 +111,46 @@ def _openai_compatible_model(config: Config):
         api_base=config.llm_base_url.rstrip("/"),
         api_key=config.llm_api_key,
     )
+
+
+def is_quota_error(exc: BaseException) -> bool:
+    """Whether a failure is the provider refusing, rather than a real fault.
+
+    Matched on the message because each SDK wraps it differently: ADK raises
+    _ResourceExhaustedError, LiteLLM its own, and a bare httpx call gives you a
+    status. The one thing they all carry is the 429 and the phrase.
+    """
+    text = str(exc)
+    return "RESOURCE_EXHAUSTED" in text or "429" in text or "quota" in text.lower()
+
+
+def fallback_model(config: Config):
+    """The coach's second provider, or None when none is configured.
+
+    Planning is the one place a quota error is fatal rather than annoying: the
+    dock can say "ask again in a minute", but a week that will not generate is
+    simply absent, and the free tiers that plan well are exactly the ones with
+    tight caps.
+
+    Deliberately separate from LLM_* rather than reusing it. Those settings are
+    the dock's provider; making the coach's fallback share them would mean you
+    could not run a free primary and a paid backstop, which is the entire point.
+    """
+    if not config.has_coach_fallback:
+        return None
+
+    try:
+        from google.adk.models.lite_llm import LiteLlm
+    except ImportError as exc:  # pragma: no cover - install-time path
+        raise CoachUnavailable(
+            "A fallback provider needs LiteLLM. Install it with: "
+            'pip install -e ".[coach]"'
+        ) from exc
+
+    # openai/ for the same reason as _openai_compatible_model: it tells LiteLLM
+    # to honour api_base rather than routing to a vendor's default host.
+    return LiteLlm(
+        model=f"openai/{config.coach_fallback_model}",
+        api_base=config.coach_fallback_base_url.rstrip("/"),
+        api_key=config.coach_fallback_api_key,
+    )

@@ -217,6 +217,13 @@ option against the same eval fixture -- three weeks with no back work.
 **Nothing may assume a model id.** One became unavailable mid-project; the
 provider indirection in `llm.py` is what made that survivable.
 
+**A fallback provider is supported, and off by default.** Set the three
+`COACH_FALLBACK_*` variables and a 429 from the primary re-runs the whole
+pipeline on a second, OpenAI-compatible provider -- intended as DeepSeek through
+OpenRouter. Only a quota refusal triggers it; a malformed proposal is a real
+fault and retrying it elsewhere would hide the cause behind a second bill. The
+result carries `planned_by`, so a week produced by the backstop is never silent.
+
 **Coach evals run about monthly.** No free model has both the quality to plan
 and the quota to sustain a full pass (~54 requests). If they need to run more
 often, the answer is a paid provider -- DeepSeek is costed at roughly $0.0015

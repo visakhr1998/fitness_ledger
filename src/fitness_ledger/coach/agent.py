@@ -37,7 +37,7 @@ from pydantic import BaseModel, Field, model_validator
 
 from ..config import Config
 from ..db import SQLiteRepository
-from . import configure_adk_environment, require_adk
+from . import configure_adk_environment, fallback_model, is_quota_error, require_adk
 from .context import build_context_reader, next_monday
 from .tools import build_tools
 
@@ -347,11 +347,20 @@ PLANNER_TEMPERATURE = 0.0
 
 
 def build_coach(
-    repo: SQLiteRepository, config: Config, week_start: date | None = None
+    repo: SQLiteRepository,
+    config: Config,
+    week_start: date | None = None,
+    model: Any = None,
 ) -> Any:
-    """The whole pipeline: read the picture, plan lifting, then place runs."""
+    """The whole pipeline: read the picture, plan lifting, then place runs.
+
+    `model` overrides the configured provider, which is how the fallback in
+    `propose_week` re-runs the identical pipeline somewhere else. Everything
+    but the model stays the same, so a plan produced on the backstop is
+    comparable with one produced on the primary.
+    """
     require_adk()
-    model = configure_adk_environment(config)
+    model = model or configure_adk_environment(config)
 
     from google.adk.agents import LlmAgent, SequentialAgent
     from google.genai import types
@@ -409,16 +418,45 @@ def build_coach(
 async def propose_week(
     repo: SQLiteRepository, config: Config, week_start: date | None = None
 ) -> dict[str, Any]:
-    """Run the coach once and return the merged proposal plus its tool trace.
+    """Run the coach, falling back to a second provider if the first refuses.
+
+    The models that plan well on a free tier are exactly the ones with tight
+    caps, and a quota error here is not the inconvenience it is in the dock:
+    the dock can say "ask again in a minute", but a week that will not generate
+    is simply absent. So when the primary returns 429 and a fallback is
+    configured, the same pipeline runs again elsewhere.
+
+    Only a quota refusal triggers it. A malformed proposal or a missing tool is
+    a real fault, and retrying it on another provider would hide the cause
+    behind a second bill.
+    """
+    require_adk()
+
+    try:
+        return await _run_coach(repo, config, week_start)
+    except Exception as exc:  # noqa: BLE001 - re-raised unless quota + fallback
+        backstop = fallback_model(config) if is_quota_error(exc) else None
+        if backstop is None:
+            raise
+        return await _run_coach(repo, config, week_start, model=backstop, on_fallback=exc)
+
+
+async def _run_coach(
+    repo: SQLiteRepository,
+    config: Config,
+    week_start: date | None = None,
+    model: Any = None,
+    on_fallback: BaseException | None = None,
+) -> dict[str, Any]:
+    """One pass of the pipeline.
 
     The trace is captured from day one because trajectory evaluation depends on
     it and it cannot be reconstructed afterwards.
     """
-    require_adk()
     from google.adk.runners import InMemoryRunner
     from google.genai import types
 
-    coach = build_coach(repo, config, week_start)
+    coach = build_coach(repo, config, week_start, model=model)
     runner = InMemoryRunner(agent=coach, app_name="fitness-ledger-coach")
 
     session = await runner.session_service.create_session(
@@ -459,4 +497,9 @@ async def propose_week(
         # allocates against the same deficit the agent was shown.
         "ledger_state": state.get("ledger_state", {}),
         "exercise_pool": state.get("exercise_pool", []),
+        # Named, not silent. A week planned by the backstop is still a valid
+        # week, but you should be able to tell -- if every plan is arriving
+        # this way the primary is not really the primary any more.
+        "planned_by": getattr(model, "model", None) or configure_adk_environment(config),
+        "fell_back_from": str(on_fallback)[:200] if on_fallback else None,
     }

@@ -145,3 +145,75 @@ def test_an_openai_compatible_provider_without_a_key_says_so():
                 llm_api_key="",
             )
         )
+
+
+# --- the fallback provider --------------------------------------------------
+
+
+def fallback_config(**overrides):
+    from dataclasses import replace
+
+    from fitness_ledger.config import Config
+
+    settings = {
+        "coach_fallback_base_url": "https://openrouter.ai/api/v1",
+        "coach_fallback_model": "deepseek/deepseek-v4-flash-0731",
+        "coach_fallback_api_key": "not-a-real-key",
+    }
+    settings.update(overrides)
+    return replace(Config.load(), **settings)
+
+
+def test_no_fallback_is_configured_by_default():
+    """It costs money. Opting in has to be deliberate."""
+    from fitness_ledger.coach import fallback_model
+    from fitness_ledger.config import Config
+
+    assert fallback_model(Config.load()) is None
+
+
+def test_a_partly_configured_fallback_is_no_fallback():
+    """A base URL with no key would fail at the worst moment -- mid-plan, after
+    the primary has already refused."""
+    from fitness_ledger.coach import fallback_model
+
+    assert fallback_model(fallback_config(coach_fallback_api_key=None)) is None
+    assert fallback_model(fallback_config(coach_fallback_model=None)) is None
+
+
+def test_a_configured_fallback_resolves():
+    pytest.importorskip("litellm", reason="coach extra not installed")
+    from fitness_ledger.coach import fallback_model
+
+    assert fallback_model(fallback_config()).model == (
+        "openai/deepseek/deepseek-v4-flash-0731"
+    )
+
+
+def test_only_a_quota_refusal_triggers_the_fallback():
+    """A malformed proposal is a real fault. Retrying it elsewhere would hide
+    the cause behind a second bill."""
+    from fitness_ledger.coach import is_quota_error
+
+    assert is_quota_error(Exception("429 RESOURCE_EXHAUSTED"))
+    assert is_quota_error(Exception("You exceeded your current quota"))
+    assert not is_quota_error(ValueError("2 validation errors for StrengthProposal"))
+    assert not is_quota_error(TimeoutError("read timeout"))
+
+
+def test_the_fallback_is_separate_from_the_dock_provider():
+    """Sharing LLM_* would mean you could not run a free primary and a paid
+    backstop, which is the entire point of having one."""
+    from dataclasses import replace
+
+    from fitness_ledger.coach import fallback_model
+    from fitness_ledger.config import Config
+
+    dock_only = replace(
+        Config.load(),
+        llm_provider="openai-compatible",
+        llm_base_url="https://api.deepseek.com",
+        llm_model="deepseek-v4-flash",
+        llm_api_key="k",
+    )
+    assert fallback_model(dock_only) is None

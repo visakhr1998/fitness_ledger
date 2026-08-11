@@ -76,6 +76,22 @@ class Config:
     # to switch it off where the provider supports it. "off" sends no parameter.
     llm_reasoning_effort: str | None = None
 
+    # A second provider for the coach only, used when the first refuses.
+    # Planning is the one place a quota error is fatal rather than annoying:
+    # the dock can say "ask again in a minute", but a week that will not
+    # generate is just absent. Any OpenAI-compatible endpoint.
+    coach_fallback_base_url: str | None = None
+    coach_fallback_model: str | None = None
+    coach_fallback_api_key: str | None = None
+
+    @property
+    def has_coach_fallback(self) -> bool:
+        return bool(
+            self.coach_fallback_base_url
+            and self.coach_fallback_model
+            and self.coach_fallback_api_key
+        )
+
     @classmethod
     def load(cls) -> "Config":
         return cls(
@@ -102,6 +118,9 @@ class Config:
             llm_base_url=os.environ.get("LLM_BASE_URL") or None,
             llm_model=os.environ.get("LLM_MODEL") or None,
             llm_api_key=os.environ.get("LLM_API_KEY") or None,
+            coach_fallback_base_url=os.environ.get("COACH_FALLBACK_BASE_URL") or None,
+            coach_fallback_model=os.environ.get("COACH_FALLBACK_MODEL") or None,
+            coach_fallback_api_key=os.environ.get("COACH_FALLBACK_API_KEY") or None,
             llm_reasoning_effort=os.environ.get("LLM_REASONING_EFFORT") or None,
         )
 
