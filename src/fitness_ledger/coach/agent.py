@@ -416,7 +416,10 @@ def build_coach(
 
 
 async def propose_week(
-    repo: SQLiteRepository, config: Config, week_start: date | None = None
+    repo: SQLiteRepository,
+    config: Config,
+    week_start: date | None = None,
+    model: Any = None,
 ) -> dict[str, Any]:
     """Run the coach, falling back to a second provider if the first refuses.
 
@@ -431,6 +434,12 @@ async def propose_week(
     behind a second bill.
     """
     require_adk()
+
+    if model is not None:
+        # Pinned: no fallback. Used to grade one provider at a time, where a
+        # silent switch mid-suite would blend two models into one score that
+        # describes neither.
+        return await _run_coach(repo, config, week_start, model=model)
 
     try:
         return await _run_coach(repo, config, week_start)

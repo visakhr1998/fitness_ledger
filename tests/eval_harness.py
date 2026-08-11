@@ -62,7 +62,13 @@ FORBIDDEN_TOOLS = frozenset({"get_volume_vs_target", "get_neglected"})
 # seconds and no faster. Fired back to back the suite exhausts the minute in
 # seconds and every fixture after the fifth fails -- and fails *as though the
 # coach misbehaved*, which is the worse half of the problem.
-MIN_SECONDS_BETWEEN_RUNS = 13.0
+MIN_SECONDS_BETWEEN_RUNS = float(os.environ.get("COACH_EVAL_PACE_SECONDS", "13"))
+
+# Which provider to grade. "fallback" pins every run to the backstop, which is
+# how you get a coherent baseline: with the fallback live, a suite silently
+# grades whichever model happened to answer, and a 2-of-3 that is really
+# "primary twice, backstop once" describes neither of them.
+EVAL_MODEL = os.environ.get("COACH_EVAL_MODEL", "primary").strip().lower()
 QUOTA_RETRIES = 3
 DEFAULT_RETRY_WAIT = 25.0
 
@@ -224,7 +230,16 @@ def _plan_once(name: str, tmp_root: Path, attempt: int) -> EvalRun:
     with SQLiteRepository(db, 120) as repo:
         fixtures.build(repo, name)
         context = gather_context(repo, config, week)
-        result = asyncio.run(propose_week(repo, config, week))
+        pinned = None
+        if EVAL_MODEL == "fallback":
+            from fitness_ledger.coach import fallback_model
+
+            pinned = fallback_model(config)
+            if pinned is None:
+                raise RuntimeError(
+                    "COACH_EVAL_MODEL=fallback but no COACH_FALLBACK_* is configured"
+                )
+        result = asyncio.run(propose_week(repo, config, week, model=pinned))
         assembled = assemble(repo, config, result, persist=False)
 
     _cache[(name, attempt)] = EvalRun(
