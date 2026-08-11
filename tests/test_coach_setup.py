@@ -164,12 +164,16 @@ def fallback_config(**overrides):
     return replace(Config.load(), **settings)
 
 
-def test_no_fallback_is_configured_by_default():
-    """It costs money. Opting in has to be deliberate."""
-    from fitness_ledger.coach import fallback_model
-    from fitness_ledger.config import Config
+def test_no_fallback_means_no_fallback():
+    """It costs money. Opting in has to be deliberate.
 
-    assert fallback_model(Config.load()) is None
+    Built explicitly rather than from `Config.load()`: reading the developer's
+    own .env made this pass or fail depending on whose machine it ran on, and
+    it started failing the moment a real fallback was configured.
+    """
+    from fitness_ledger.coach import fallback_model
+
+    assert fallback_model(fallback_config(coach_fallback_base_url=None)) is None
 
 
 def test_a_partly_configured_fallback_is_no_fallback():
@@ -210,10 +214,25 @@ def test_the_fallback_is_separate_from_the_dock_provider():
     from fitness_ledger.config import Config
 
     dock_only = replace(
-        Config.load(),
+        fallback_config(coach_fallback_base_url=None, coach_fallback_api_key=None,
+                        coach_fallback_model=None),
         llm_provider="openai-compatible",
         llm_base_url="https://api.deepseek.com",
         llm_model="deepseek-v4-flash",
         llm_api_key="k",
     )
     assert fallback_model(dock_only) is None
+
+
+def test_secrets_never_reach_a_repr():
+    """A dataclass prints every field, so one traceback anywhere -- an API 500,
+    a CLI crash, a failing assertion -- puts an API key into a log or a bug
+    report. It happened once, in pytest output."""
+    import re
+
+    from fitness_ledger.config import Config
+
+    text = repr(Config.load())
+    assert not re.search(r"sk-[A-Za-z0-9-]{8,}|AIza[A-Za-z0-9_-]{8,}", text), text[:200]
+    for field in ("gemini_api_key", "llm_api_key", "coach_fallback_api_key"):
+        assert field not in text

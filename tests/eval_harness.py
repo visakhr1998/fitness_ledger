@@ -122,6 +122,11 @@ class EvalRun:
     unmet: dict[str, float] = field(default_factory=dict)
     unplaced: list[str] = field(default_factory=list)
     trace: list[dict[str, Any]] = field(default_factory=list)
+    # Which model actually produced this. With a fallback configured a suite can
+    # silently grade two models at once, and a 2-of-3 score that is really
+    # "primary twice, backstop once" describes neither of them.
+    planned_by: str = "?"
+    fell_back: bool = False
 
     @property
     def tools_called(self) -> list[str]:
@@ -150,11 +155,13 @@ class EvalRun:
 
     def summary(self) -> str:
         """One line per fixture, for reading a whole run at a glance."""
+        model = self.planned_by.replace("openai/", "")
         return (
             f"{self.fixture.name:20} {len(self.plan.sessions)} sessions"
             f" / {self.plan.total_sets:3} sets"
-            f" / {len(self.trace)} tool calls"
+            f" / {len(self.trace)} tools"
             f" / {len(self.problems)} problems"
+            f" / {model}{'  (fell back)' if self.fell_back else ''}"
         )
 
 
@@ -230,6 +237,8 @@ def _plan_once(name: str, tmp_root: Path, attempt: int) -> EvalRun:
         unmet=assembled["unmet"],
         unplaced=assembled["unplaced"],
         trace=result.get("agent_trace") or [],
+        planned_by=str(result.get("planned_by") or "?"),
+        fell_back=bool(result.get("fell_back_from")),
     )
     return _cache[(name, attempt)]
 
@@ -300,6 +309,12 @@ def repeat(name: str, tmp_root: Path, times: int | None = None) -> list[EvalRun]
         except QuotaExhausted:
             break
     return runs
+
+
+def models_used(runs: list[EvalRun]) -> str:
+    """Every distinct model behind a set of runs, so a blended score says so."""
+    seen = sorted({run.planned_by.replace("openai/", "") for run in runs})
+    return ", ".join(seen)
 
 
 def score(label: str, fixture: str, runs: list[EvalRun], holds) -> Score:
