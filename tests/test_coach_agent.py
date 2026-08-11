@@ -113,12 +113,17 @@ def test_the_no_arithmetic_rule_is_stated_to_both():
     assert "Never do arithmetic" in RUNNING_INSTRUCTION
 
 
-def test_the_strength_planner_is_told_not_to_choose_its_own_window():
-    # The failure this fixed: left to itself it called get_volume_vs_target
-    # with 'this-week', a barely-started week where every muscle reads as a
-    # full target short, then planned against that.
+def test_the_strength_planner_cannot_choose_its_own_window():
+    """Once an instruction, now a fact: the tool is not offered at all.
+
+    Left to itself it called get_volume_vs_target with 'this-week' -- a
+    barely-started week where every muscle reads as a full target short -- and
+    planned against that. Being told not to was not enough; three of ten runs
+    did it anyway, which is why the instruction now describes the absence
+    rather than forbidding the act.
+    """
     flat = " ".join(STRENGTH_INSTRUCTION.split())
-    assert "do not pick your own window" in flat
+    assert "no tool to recompute it" in flat
     assert "part-finished week" in flat
 
 
