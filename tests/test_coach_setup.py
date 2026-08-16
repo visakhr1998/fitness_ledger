@@ -79,3 +79,160 @@ def test_a_model_belonging_to_another_provider_is_ignored():
         config(gemini_api_key="k", llm_provider="ollama", llm_model="qwen3:4b")
     )
     assert model == "gemini-2.5-flash"
+
+
+# --- providers that are not Gemini ------------------------------------------
+
+
+def test_an_openai_compatible_provider_becomes_a_litellm_model():
+    """ADK speaks Gemini natively and reaches everything else through LiteLLM.
+    One config switch moves both the dock and the coach."""
+    pytest.importorskip("litellm", reason="coach extra not installed")
+    from dataclasses import replace
+
+    from fitness_ledger.coach import configure_adk_environment
+    from fitness_ledger.config import Config
+
+    model = configure_adk_environment(
+        replace(
+            Config.load(),
+            llm_provider="openai-compatible",
+            llm_base_url="https://api.deepseek.com",
+            llm_model="deepseek-v4-flash",
+            llm_api_key="not-a-real-key",
+        )
+    )
+
+    # `openai/` tells LiteLLM to treat the endpoint as OpenAI-shaped and honour
+    # api_base. Naming the vendor instead makes it ignore api_base and route to
+    # that vendor's default host -- wrong the moment the endpoint is a proxy.
+    assert model.model == "openai/deepseek-v4-flash"
+
+
+def test_gemini_is_still_a_plain_model_id():
+    """The default path must not start depending on LiteLLM."""
+    from fitness_ledger.coach import configure_adk_environment
+    from fitness_ledger.config import Config
+
+    assert isinstance(configure_adk_environment(Config.load()), str)
+
+
+def test_an_openai_compatible_provider_without_a_url_says_so():
+    from dataclasses import replace
+
+    from fitness_ledger.coach import CoachUnavailable, configure_adk_environment
+    from fitness_ledger.config import Config
+
+    with pytest.raises(CoachUnavailable, match="LLM_BASE_URL"):
+        configure_adk_environment(
+            replace(Config.load(), llm_provider="openai-compatible", llm_base_url="")
+        )
+
+
+def test_an_openai_compatible_provider_without_a_key_says_so():
+    from dataclasses import replace
+
+    from fitness_ledger.coach import CoachUnavailable, configure_adk_environment
+    from fitness_ledger.config import Config
+
+    with pytest.raises(CoachUnavailable, match="LLM_API_KEY"):
+        configure_adk_environment(
+            replace(
+                Config.load(),
+                llm_provider="openai-compatible",
+                llm_base_url="https://api.deepseek.com",
+                llm_model="deepseek-v4-flash",
+                llm_api_key="",
+            )
+        )
+
+
+# --- the fallback provider --------------------------------------------------
+
+
+def fallback_config(**overrides):
+    from dataclasses import replace
+
+    from fitness_ledger.config import Config
+
+    settings = {
+        "coach_fallback_base_url": "https://openrouter.ai/api/v1",
+        "coach_fallback_model": "deepseek/deepseek-v4-flash-0731",
+        "coach_fallback_api_key": "not-a-real-key",
+    }
+    settings.update(overrides)
+    return replace(Config.load(), **settings)
+
+
+def test_no_fallback_means_no_fallback():
+    """It costs money. Opting in has to be deliberate.
+
+    Built explicitly rather than from `Config.load()`: reading the developer's
+    own .env made this pass or fail depending on whose machine it ran on, and
+    it started failing the moment a real fallback was configured.
+    """
+    from fitness_ledger.coach import fallback_model
+
+    assert fallback_model(fallback_config(coach_fallback_base_url=None)) is None
+
+
+def test_a_partly_configured_fallback_is_no_fallback():
+    """A base URL with no key would fail at the worst moment -- mid-plan, after
+    the primary has already refused."""
+    from fitness_ledger.coach import fallback_model
+
+    assert fallback_model(fallback_config(coach_fallback_api_key=None)) is None
+    assert fallback_model(fallback_config(coach_fallback_model=None)) is None
+
+
+def test_a_configured_fallback_resolves():
+    pytest.importorskip("litellm", reason="coach extra not installed")
+    from fitness_ledger.coach import fallback_model
+
+    assert fallback_model(fallback_config()).model == (
+        "openai/deepseek/deepseek-v4-flash-0731"
+    )
+
+
+def test_only_a_quota_refusal_triggers_the_fallback():
+    """A malformed proposal is a real fault. Retrying it elsewhere would hide
+    the cause behind a second bill."""
+    from fitness_ledger.coach import is_quota_error
+
+    assert is_quota_error(Exception("429 RESOURCE_EXHAUSTED"))
+    assert is_quota_error(Exception("You exceeded your current quota"))
+    assert not is_quota_error(ValueError("2 validation errors for StrengthProposal"))
+    assert not is_quota_error(TimeoutError("read timeout"))
+
+
+def test_the_fallback_is_separate_from_the_dock_provider():
+    """Sharing LLM_* would mean you could not run a free primary and a paid
+    backstop, which is the entire point of having one."""
+    from dataclasses import replace
+
+    from fitness_ledger.coach import fallback_model
+    from fitness_ledger.config import Config
+
+    dock_only = replace(
+        fallback_config(coach_fallback_base_url=None, coach_fallback_api_key=None,
+                        coach_fallback_model=None),
+        llm_provider="openai-compatible",
+        llm_base_url="https://api.deepseek.com",
+        llm_model="deepseek-v4-flash",
+        llm_api_key="k",
+    )
+    assert fallback_model(dock_only) is None
+
+
+def test_secrets_never_reach_a_repr():
+    """A dataclass prints every field, so one traceback anywhere -- an API 500,
+    a CLI crash, a failing assertion -- puts an API key into a log or a bug
+    report. It happened once, in pytest output."""
+    import re
+
+    from fitness_ledger.config import Config
+
+    text = repr(Config.load())
+    assert not re.search(r"sk-[A-Za-z0-9-]{8,}|AIza[A-Za-z0-9_-]{8,}", text), text[:200]
+    for field in ("gemini_api_key", "llm_api_key", "coach_fallback_api_key"):
+        assert field not in text
