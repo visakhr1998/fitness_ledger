@@ -6,28 +6,15 @@
  */
 
 import { useState } from "react";
-import type { ExerciseSummary } from "../api";
+import { api, type ExerciseSummary, type RoutineProposal } from "../api";
 import { Card } from "../charts/primitives";
 import { ExerciseIcon } from "./ExerciseIcon";
-
-type DiffRow = {
-  change: "add" | "change" | "remove" | "same";
-  exercise: string;
-  before: string | null;
-  after: string | null;
-  why: string;
-};
-
-type Proposal = {
-  id: number;
-  summary: string;
-  diff: { rows: DiffRow[]; added: number; changed: number; removed: number; warning: string };
-};
+import { RoutineDiff, WrittenNote } from "./RoutineDiff";
 
 export function WriteBack({ catalog }: { catalog: ExerciseSummary[] }) {
   const [picked, setPicked] = useState<string[]>([]);
   const [title, setTitle] = useState("");
-  const [proposal, setProposal] = useState<Proposal | null>(null);
+  const [proposal, setProposal] = useState<RoutineProposal | null>(null);
   const [written, setWritten] = useState<{ hevy_id: string | null } | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -60,10 +47,7 @@ export function WriteBack({ catalog }: { catalog: ExerciseSummary[] }) {
     setBusy(true);
     setError(null);
     try {
-      const response = await fetch(`/api/writeback/${proposal.id}/approve`, { method: "POST" });
-      const body = await response.json();
-      if (!response.ok) throw new Error(body.detail ?? "write failed");
-      setWritten(body);
+      setWritten(await api.approveRoutine(proposal.id));
       setProposal(null);
     } catch (err) {
       setError(String(err instanceof Error ? err.message : err));
@@ -132,97 +116,15 @@ export function WriteBack({ catalog }: { catalog: ExerciseSummary[] }) {
         </div>
       )}
 
-      {written && (
-        <div
-          role="status"
-          style={{
-            marginTop: 12, padding: "10px 14px", borderRadius: 14,
-            background: "var(--surface-raised)", borderLeft: "3px solid var(--good)", fontSize: 13,
-          }}
-        >
-          <strong style={{ color: "var(--good)" }}>✓ Written to Hevy</strong>
-          {written.hevy_id && (
-            <span style={{ color: "var(--text-muted)" }}> · id {written.hevy_id}</span>
-          )}
-          <div style={{ color: "var(--text-muted)", marginTop: 4 }}>
-            Remove it in the Hevy app if you did not want it — the API cannot delete.
-          </div>
-        </div>
-      )}
+      {written && <WrittenNote hevyId={written.hevy_id} />}
 
       {proposal && (
-        <div style={{ marginTop: 14, borderTop: "1px solid var(--grid)", paddingTop: 14 }}>
-          <div style={{ fontSize: 14, fontWeight: 500 }}>{proposal.summary}</div>
-
-          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, marginTop: 10 }}>
-            <thead>
-              <tr>
-                {["", "Exercise", "Now", "Proposed", "Why"].map((header) => (
-                  <th
-                    key={header}
-                    style={{
-                      textAlign: "left", fontSize: 11, color: "var(--text-secondary)",
-                      padding: "4px 8px 4px 0", borderBottom: "1px solid var(--grid)",
-                    }}
-                  >
-                    {header}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {proposal.diff.rows.map((row) => (
-                <tr key={row.exercise}>
-                  {/* Symbol plus wording: the change type never rides on colour. */}
-                  <td style={{ padding: "6px 8px 6px 0", color: "var(--good)", width: 18 }}>
-                    {row.change === "add" ? "+" : row.change === "remove" ? "−" : "~"}
-                  </td>
-                  <td style={{ padding: "6px 8px 6px 0" }}>{row.exercise}</td>
-                  <td className="tabular" style={{ padding: "6px 8px 6px 0", color: "var(--text-muted)" }}>
-                    {row.before ?? "—"}
-                  </td>
-                  <td className="tabular" style={{ padding: "6px 8px 6px 0" }}>{row.after ?? "—"}</td>
-                  <td style={{ padding: "6px 8px 6px 0", color: "var(--text-muted)", fontSize: 12 }}>
-                    {row.why}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-
-          <div
-            style={{
-              marginTop: 12, padding: "10px 14px", borderRadius: 14,
-              background: "var(--surface-raised)", borderLeft: "3px solid var(--warning)",
-              fontSize: 12, color: "var(--text-secondary)",
-            }}
-          >
-            <span aria-hidden style={{ color: "var(--warning)" }}>▲ </span>
-            <strong>This writes to your real Hevy account.</strong> {proposal.diff.warning}
-          </div>
-
-          <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
-            <button
-              onClick={approve}
-              disabled={busy}
-              style={{
-                padding: "8px 18px", borderRadius: "var(--radius-control)", fontSize: 13,
-                fontWeight: 600, background: "var(--accent)", color: "#04121a",
-              }}
-            >
-              {busy ? "Writing…" : "Write to Hevy"}
-            </button>
-            <button
-              onClick={() => setProposal(null)}
-              style={{
-                padding: "8px 18px", borderRadius: "var(--radius-control)", fontSize: 13,
-                border: "1px solid var(--border)", color: "var(--text-secondary)",
-              }}
-            >
-              Cancel
-            </button>
-          </div>
-        </div>
+        <RoutineDiff
+          proposal={proposal}
+          busy={busy}
+          onConfirm={approve}
+          onCancel={() => setProposal(null)}
+        />
       )}
     </Card>
   );
