@@ -178,7 +178,7 @@ Two rules, both learned the hard way:
 ## Working here
 
 ```bash
-./.venv/Scripts/python.exe -m pytest              # 358 tests, keep them green
+./.venv/Scripts/python.exe -m pytest              # 466 tests, keep them green
 cd frontend && npm run build                      # required after any frontend change
 ./.venv/Scripts/python.exe -m fitness_ledger.cli doctor
 ./.venv/Scripts/python.exe -m fitness_ledger.cli sync
@@ -252,6 +252,11 @@ per plan in `UNDERSTANDING.md` -- and never a looser assertion.
 - **Write-back must stay approval-gated.** propose → diff → confirm → write →
   log. The propose step never calls Hevy. **Hevy has no delete endpoint**, so an
   accidental write can only be undone by hand in the app; never remove the diff.
+  Two callers now share that surface — `WriteBack.tsx`'s routine builder and the
+  Week tab's per-day send — through `RoutineDiff.tsx`. Approving a *plan* is a
+  ledger state change and must never write; only the per-day step does, and
+  `tests/test_plan_api.py` asserts the plan decision never reaches
+  `build_routine`.
 - **The `drift` insight rule is unblocked but not written.** It compares logged
   sessions against *planned* ones, which needed `Plan` and `Availability` to
   exist. Both now do, so the blocker is gone — the rule itself is still to do.
