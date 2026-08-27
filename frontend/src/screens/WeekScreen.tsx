@@ -5,13 +5,23 @@
  * would mean no screen ever showed what the week *traded away* — which is the
  * most useful thing a plan says, and why `trade_offs` is its own field.
  *
- * Read-only. Generating and approving land with day 10.
+ * Three things happen here, and the order they appear in is the order they
+ * happen: generate a week, decide on it, then write a day to Hevy. Only the
+ * last leaves this app, and it goes through the same propose → diff → confirm
+ * surface as every other write.
  */
 
-import { useEffect, useState } from "react";
-import { api, type PlanSection } from "../api";
+import { useCallback, useEffect, useState } from "react";
+import {
+  api,
+  type AvailabilitySection,
+  type PlanSection,
+  type PlanStatus,
+  type RoutineProposal,
+} from "../api";
 import { Card, fmt } from "../charts/primitives";
 import { MetricCard } from "../components/shell";
+import { RoutineDiff, WrittenNote } from "../components/RoutineDiff";
 import { ErrorNote, Loading } from "./RunScreen";
 
 const DAY = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
@@ -35,21 +45,139 @@ function addDays(iso: string, days: number): string {
   return at.toISOString().slice(0, 10);
 }
 
+const BUTTON: React.CSSProperties = {
+  padding: "7px 16px",
+  borderRadius: "var(--radius-control)",
+  fontSize: 13,
+  border: "1px solid var(--border)",
+  background: "var(--surface)",
+  color: "var(--text-primary)",
+};
+
+/** Generate a week in the background, polling like a sync does.
+ *
+ *  Generation is ~3 model requests and tens of seconds, so it cannot be a plain
+ *  request. `unavailable` is rendered differently from `error`: a missing coach
+ *  extra is a setup problem, and telling someone their plan failed when they
+ *  never installed the planner sends them debugging the wrong thing.
+ */
+function GenerateControl({ onDone, label }: { onDone: () => void; label: string }) {
+  const [status, setStatus] = useState<PlanStatus | null>(null);
+  const [polling, setPolling] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!polling) return;
+    const timer = setInterval(async () => {
+      const next = await api.planStatus();
+      setStatus(next);
+      if (next.status !== "running") {
+        setPolling(false);
+        if (next.status === "done") onDone();
+      }
+    }, 1200);
+    return () => clearInterval(timer);
+  }, [polling, onDone]);
+
+  const running = status?.status === "running" || polling;
+
+  const start = async () => {
+    setError(null);
+    try {
+      const body = await api.startPlan();
+      if (body.status === "running") {
+        setError(body.detail ?? "a plan is already being generated");
+        return;
+      }
+      setStatus({ status: "running", week: null, plan_id: null, error: null });
+      setPolling(true);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  const note =
+    error ??
+    (status?.status === "unavailable"
+      ? `${status.error} — the dashboard works without it; planning does not.`
+      : status?.status === "error"
+        ? status.error
+        : null);
+
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+      <button onClick={start} disabled={running} style={{ ...BUTTON, color: running ? "var(--text-muted)" : "var(--text-primary)" }}>
+        {running ? "Planning…" : label}
+      </button>
+
+      {running && (
+        <span role="status" style={{ fontSize: 12, color: "var(--text-muted)" }}>
+          three model requests, usually under a minute
+        </span>
+      )}
+
+      {note && (
+        <span role="alert" style={{ fontSize: 12, color: "var(--critical)" }}>
+          ▲ {note}
+        </span>
+      )}
+
+      {status?.status === "done" && status.fell_back && (
+        /* A week produced by the backstop is never silent — the primary
+           refused, and which model answered changes how much to trust it. */
+        <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
+          planned by {status.planned_by} (fallback)
+        </span>
+      )}
+    </div>
+  );
+}
+
 export function WeekScreen({ reloadKey }: { reloadKey: number }) {
   const [data, setData] = useState<PlanSection | null>(null);
+  const [days, setDays] = useState<AvailabilitySection | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [refresh, setRefresh] = useState(0);
+
+  const [proposal, setProposal] = useState<(RoutineProposal & { day: string }) | null>(null);
+  const [written, setWritten] = useState<{ hevy_id: string | null } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
+
+  const reload = useCallback(() => setRefresh((n) => n + 1), []);
 
   useEffect(() => {
     let cancelled = false;
     setError(null);
     api
       .plan()
-      .then((plan) => !cancelled && setData(plan))
+      .then((plan) => {
+        if (cancelled) return;
+        setData(plan);
+        if (plan.plan) {
+          api
+            .availability(plan.plan.week_start)
+            .then((entries) => !cancelled && setDays(entries))
+            .catch(() => undefined);
+        }
+      })
       .catch((err) => !cancelled && setError(err.message));
     return () => {
       cancelled = true;
     };
-  }, [reloadKey]);
+  }, [reloadKey, refresh]);
+
+  const act = async (work: () => Promise<void>) => {
+    setBusy(true);
+    setActionError(null);
+    try {
+      await work();
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
 
   if (error) return <ErrorNote message={error} />;
   if (!data) return <Loading />;
@@ -57,24 +185,25 @@ export function WeekScreen({ reloadKey }: { reloadKey: number }) {
   if (!data.available || !data.plan) {
     return (
       <Card title="No plan yet">
-        <p style={{ color: "var(--text-secondary)", fontSize: 14, margin: 0 }}>
-          {data.reason ?? "Nothing has been planned."} Generate one with{" "}
-          <code style={{ color: "var(--text-primary)" }}>ledger plan</code>.
+        <p style={{ color: "var(--text-secondary)", fontSize: 14, marginTop: 0 }}>
+          {data.reason ?? "Nothing has been planned."}
         </p>
-        <p style={{ color: "var(--text-muted)", fontSize: 13, marginBottom: 0 }}>
-          Planning from the dashboard arrives with the approval flow.
-        </p>
+        <GenerateControl onDone={reload} label="Plan next week" />
       </Card>
     );
   }
 
   const { plan, adherence, problems } = data;
+  const lost = new Map((days?.unavailable ?? []).map((entry) => [entry.date, entry]));
+
   // Fill the gaps: a week with three sessions has four rest days, and they are
   // part of the shape. Showing only the trained days hides how the week sits.
-  const days = Array.from({ length: 7 }, (_, offset) => {
+  const week = Array.from({ length: 7 }, (_, offset) => {
     const iso = addDays(plan.week_start, offset);
     return { iso, sessions: plan.sessions.filter((s) => s.date === iso) };
   });
+
+  const decided = plan.status !== "proposed";
 
   return (
     <div style={{ display: "grid", gap: "var(--gap)" }}>
@@ -117,89 +246,193 @@ export function WeekScreen({ reloadKey }: { reloadKey: number }) {
         />
       </div>
 
+      <Card
+        title="This week"
+        caption={
+          decided
+            ? `${plan.status} — regenerating stores a new week, it does not edit this one`
+            : "Nothing here has touched Hevy yet"
+        }
+      >
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+          {!decided && (
+            <>
+              <button
+                onClick={() => act(async () => { await api.decidePlan(plan.id!, "approved"); reload(); })}
+                disabled={busy}
+                style={{ ...BUTTON, background: "var(--accent)", color: "#04121a", fontWeight: 600, border: "none" }}
+              >
+                Accept this week
+              </button>
+              <button
+                onClick={() => act(async () => { await api.decidePlan(plan.id!, "rejected"); reload(); })}
+                disabled={busy}
+                style={{ ...BUTTON, color: "var(--text-secondary)" }}
+              >
+                Reject
+              </button>
+            </>
+          )}
+          <GenerateControl onDone={reload} label={decided ? "Plan again" : "Regenerate"} />
+        </div>
+
+        {/* Accepting is a decision about the week, not a write. Saying so is
+            the difference between an advisor and an autopilot. */}
+        <p style={{ fontSize: 12, color: "var(--text-muted)", margin: "10px 0 0" }}>
+          Accepting records the week here. Each lifting day is written to Hevy
+          separately, with a diff, from the buttons below.
+        </p>
+
+        {actionError && (
+          <div role="alert" style={{ marginTop: 10, fontSize: 13, color: "var(--critical)" }}>
+            ▲ {actionError}
+          </div>
+        )}
+        {written && <WrittenNote hevyId={written.hevy_id} />}
+      </Card>
+
       <Card title="The week" caption={`${plan.total_sets} sets across seven days`}>
         <div style={{ display: "grid", gap: 10 }}>
-          {days.map(({ iso, sessions }) => (
-            <div
-              key={iso}
-              style={{
-                display: "grid",
-                gridTemplateColumns: "72px minmax(0, 1fr)",
-                gap: 14,
-                alignItems: "start",
-                padding: "10px 12px",
-                borderRadius: 12,
-                background: sessions.length ? "var(--surface-raised)" : "transparent",
-                border: `1px solid ${sessions.length ? "transparent" : "var(--grid)"}`,
-              }}
-            >
+          {week.map(({ iso, sessions }) => {
+            const off = lost.get(iso);
+            return (
               <div
+                key={iso}
                 style={{
-                  fontSize: 13,
-                  fontWeight: 600,
-                  color: sessions.length ? "var(--text-primary)" : "var(--text-muted)",
+                  display: "grid",
+                  gridTemplateColumns: "72px minmax(0, 1fr) auto",
+                  gap: 14,
+                  alignItems: "start",
+                  padding: "10px 12px",
+                  borderRadius: 12,
+                  background: sessions.length && !off ? "var(--surface-raised)" : "transparent",
+                  border: `1px solid ${sessions.length && !off ? "transparent" : "var(--grid)"}`,
+                  opacity: off ? 0.55 : 1,
                 }}
               >
-                {dayLabel(iso)}
-              </div>
-
-              {sessions.length === 0 ? (
-                <div style={{ fontSize: 13, color: "var(--text-muted)" }}>rest</div>
-              ) : (
-                <div style={{ display: "grid", gap: 8, minWidth: 0 }}>
-                  {sessions.map((session, index) => (
-                    <div key={`${session.kind}-${index}`} style={{ minWidth: 0 }}>
-                      <div
-                        style={{
-                          display: "flex",
-                          gap: 10,
-                          alignItems: "baseline",
-                          fontSize: 13,
-                          color: "var(--text-secondary)",
-                        }}
-                      >
-                        <span style={{ fontWeight: 600, color: "var(--accent)" }}>
-                          {session.focus || session.kind}
-                        </span>
-                        <span className="tabular" style={{ color: "var(--text-muted)" }}>
-                          {session.kind === "run"
-                            ? `${fmt(session.distance_km, 1)} km`
-                            : `${session.total_sets} sets`}
-                        </span>
-                      </div>
-                      {session.exercises.length > 0 && (
-                        <ul style={{ margin: "6px 0 0", padding: 0, listStyle: "none", display: "grid", gap: 3 }}>
-                          {session.exercises.map((exercise) => (
-                            <li
-                              key={exercise.exercise_template_id}
-                              style={{
-                                display: "flex",
-                                gap: 10,
-                                fontSize: 13,
-                                color: "var(--text-primary)",
-                                minWidth: 0,
-                              }}
-                            >
-                              <span className="tabular" style={{ flex: "0 0 34px", color: "var(--accent-alt)" }}>
-                                {exercise.sets} ×
-                              </span>
-                              <span style={{ flex: "1 1 auto", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                                {exercise.title}
-                              </span>
-                              <span style={{ flex: "0 0 auto", fontSize: 12, color: "var(--text-muted)" }}>
-                                {exercise.targets.map((t) => t.replace(/_/g, " ")).join(", ")}
-                              </span>
-                            </li>
-                          ))}
-                        </ul>
-                      )}
-                    </div>
-                  ))}
+                <div
+                  style={{
+                    fontSize: 13,
+                    fontWeight: 600,
+                    color: sessions.length ? "var(--text-primary)" : "var(--text-muted)",
+                  }}
+                >
+                  {dayLabel(iso)}
                 </div>
-              )}
-            </div>
-          ))}
+
+                {off ? (
+                  <div style={{ fontSize: 13, color: "var(--warning)" }}>
+                    unavailable{off.reason ? ` — ${off.reason}` : ""}
+                    <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 2 }}>
+                      Plan again to rebalance the week around it.
+                    </div>
+                  </div>
+                ) : sessions.length === 0 ? (
+                  <div style={{ fontSize: 13, color: "var(--text-muted)" }}>rest</div>
+                ) : (
+                  <div style={{ display: "grid", gap: 8, minWidth: 0 }}>
+                    {sessions.map((session, index) => (
+                      <div key={`${session.kind}-${index}`} style={{ minWidth: 0 }}>
+                        <div
+                          style={{
+                            display: "flex",
+                            gap: 10,
+                            alignItems: "baseline",
+                            fontSize: 13,
+                            color: "var(--text-secondary)",
+                          }}
+                        >
+                          <span style={{ fontWeight: 600, color: "var(--accent)" }}>
+                            {session.focus || session.kind}
+                          </span>
+                          <span className="tabular" style={{ color: "var(--text-muted)" }}>
+                            {session.kind === "run"
+                              ? `${fmt(session.distance_km, 1)} km`
+                              : `${session.total_sets} sets`}
+                          </span>
+                        </div>
+                        {session.exercises.length > 0 && (
+                          <ul style={{ margin: "6px 0 0", padding: 0, listStyle: "none", display: "grid", gap: 3 }}>
+                            {session.exercises.map((exercise) => (
+                              <li
+                                key={exercise.exercise_template_id}
+                                style={{
+                                  display: "flex",
+                                  gap: 10,
+                                  fontSize: 13,
+                                  color: "var(--text-primary)",
+                                  minWidth: 0,
+                                }}
+                              >
+                                <span className="tabular" style={{ flex: "0 0 34px", color: "var(--accent-alt)" }}>
+                                  {exercise.sets} ×
+                                </span>
+                                <span style={{ flex: "1 1 auto", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                  {exercise.title}
+                                </span>
+                                <span style={{ flex: "0 0 auto", fontSize: 12, color: "var(--text-muted)" }}>
+                                  {exercise.targets.map((t) => t.replace(/_/g, " ")).join(", ")}
+                                </span>
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                  {!off && sessions.some((s) => s.kind === "lift") && (
+                    <button
+                      onClick={() =>
+                        act(async () => {
+                          setWritten(null);
+                          setProposal({ ...(await api.planRoutine(plan.id!, iso)), day: iso });
+                        })
+                      }
+                      disabled={busy}
+                      style={{ ...BUTTON, padding: "4px 10px", fontSize: 12 }}
+                    >
+                      Send to Hevy
+                    </button>
+                  )}
+                  {/* Declaring a day lost is the thing meant to trigger a
+                      replan, and it used to be a terminal command. */}
+                  <button
+                    onClick={() =>
+                      act(async () => {
+                        if (off) await api.clearUnavailable(iso);
+                        else await api.markUnavailable(iso);
+                        setDays(await api.availability(plan.week_start));
+                      })
+                    }
+                    disabled={busy}
+                    aria-label={off ? `Mark ${iso} available` : `Mark ${iso} unavailable`}
+                    style={{ ...BUTTON, padding: "4px 10px", fontSize: 12, color: "var(--text-secondary)" }}
+                  >
+                    {off ? "Got it back" : "Can’t train"}
+                  </button>
+                </div>
+              </div>
+            );
+          })}
         </div>
+
+        {proposal && (
+          <RoutineDiff
+            proposal={proposal}
+            busy={busy}
+            confirmLabel={`Write ${dayLabel(proposal.day)} to Hevy`}
+            onConfirm={() =>
+              act(async () => {
+                setWritten(await api.approveRoutine(proposal.id));
+                setProposal(null);
+              })
+            }
+            onCancel={() => setProposal(null)}
+          />
+        )}
       </Card>
 
       <Card title="Why this week">

@@ -195,6 +195,56 @@ export type SyncStatus = {
   error: string | null;
 };
 
+/** Progress of a background plan generation, polled like a sync.
+ *
+ *  `unavailable` is separate from `error` on purpose: a missing coach extra is
+ *  a setup problem, not a failure of the coach, and the callout says which.
+ */
+export type PlanStatus = {
+  status: "idle" | "running" | "done" | "error" | "unavailable";
+  week: string | null;
+  plan_id: number | null;
+  error: string | null;
+  problems?: string[];
+  planned_by?: string | null;
+  fell_back?: boolean;
+};
+
+/** One row of a Hevy routine diff. Shared by the Week tab and Build a routine. */
+export type DiffRow = {
+  change: "add" | "change" | "remove" | "same";
+  exercise: string;
+  before: string | null;
+  after: string | null;
+  why: string;
+};
+
+export type RoutineProposal = {
+  id: number;
+  summary: string;
+  diff: { rows: DiffRow[]; added: number; changed: number; removed: number; warning: string };
+};
+
+export type Goal = {
+  id: number;
+  type: string;
+  subject: string | null;
+  target_value: number;
+  target_date: string | null;
+  status: string;
+};
+
+export type GoalsSection = {
+  goals: Goal[];
+  running_target: { distance_km_per_week: number; sessions_per_week: number } | null;
+};
+
+/** Only exceptions are stored — a day with no row is available. */
+export type AvailabilitySection = {
+  week_start: string;
+  unavailable: { date: string; available: boolean; reason: string | null; source: string }[];
+};
+
 function qs(range: Range): string {
   const params = new URLSearchParams();
   if (range.start && range.end) {
@@ -220,6 +270,27 @@ async function get<T>(path: string): Promise<T> {
     throw new Error(detail);
   }
   return response.json() as Promise<T>;
+}
+
+/** Anything that changes state. Same error unwrapping as `get`: FastAPI puts
+ *  the useful part in `detail`, and "500" tells nobody anything. */
+async function send<T>(path: string, method: string, body?: unknown): Promise<T> {
+  const response = await fetch(path, {
+    method,
+    headers: body === undefined ? undefined : { "content-type": "application/json" },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  let parsed: unknown = null;
+  try {
+    parsed = await response.json();
+  } catch {
+    /* empty body */
+  }
+  if (!response.ok) {
+    const detail = (parsed as { detail?: string } | null)?.detail;
+    throw new Error(detail ?? response.statusText);
+  }
+  return parsed as T;
 }
 
 export const api = {
@@ -248,4 +319,31 @@ export const api = {
     return response.json();
   },
   syncStatus: () => get<SyncStatus>("/api/sync/status"),
+  startPlan: async (week?: string) => {
+    const response = await fetch(`/api/plan${week ? `?week=${week}` : ""}`, { method: "POST" });
+    const body = await response.json();
+    if (!response.ok) throw new Error(body.detail ?? "could not start planning");
+    return body as { status: string; detail?: string };
+  },
+  planStatus: () => get<PlanStatus>("/api/plan/status"),
+  decidePlan: (id: number, status: "approved" | "rejected") =>
+    send<{ id: number; status: string }>(`/api/plan/${id}`, "PUT", { status }),
+  /** Draft a Hevy routine from one planned day. Never writes — see writeback.py. */
+  planRoutine: (id: number, sessionDate: string) =>
+    send<RoutineProposal>(`/api/plan/${id}/routine`, "POST", { session_date: sessionDate }),
+  approveRoutine: (proposalId: number) =>
+    send<{ id: number; status: string; hevy_id: string | null }>(
+      `/api/writeback/${proposalId}/approve`,
+      "POST",
+    ),
+  goals: () => get<GoalsSection>("/api/goals"),
+  addGoal: (body: Record<string, unknown>) => send<{ id: number }>("/api/goals", "POST", body),
+  closeGoal: (id: number, status: "achieved" | "abandoned") =>
+    send<{ id: number }>(`/api/goals/${id}`, "PUT", { status }),
+  setRunningTarget: (distance_km_per_week: number, sessions_per_week: number) =>
+    send<unknown>("/api/running-target", "PUT", { distance_km_per_week, sessions_per_week }),
+  availability: (week: string) => get<AvailabilitySection>(`/api/availability?week=${week}`),
+  markUnavailable: (date: string, reason?: string) =>
+    send<unknown>("/api/availability", "PUT", { date, reason: reason || null }),
+  clearUnavailable: (date: string) => send<{ cleared: boolean }>(`/api/availability/${date}`, "DELETE"),
 };

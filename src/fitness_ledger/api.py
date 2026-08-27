@@ -377,6 +377,299 @@ def list_writebacks(limit: int = Query(30, ge=1, le=200)) -> list[dict[str, Any]
         return repository.list_proposals(limit)
 
 
+# --- the plan write path ----------------------------------------------------
+# Generating is ~3 model requests and tens of seconds, so it follows /api/sync's
+# background-task-plus-status-poll rather than inventing a second mechanism.
+#
+# Approving a *plan* changes nothing outside this app. Writing a session to Hevy
+# is a separate, explicit step through the existing propose -> diff -> confirm
+# flow, because Hevy has no delete endpoint and the diff is what makes the write
+# deliberate. Two entry points to one flow is how `ledger sync` came to run
+# three of five steps (#16), so the plan reuses that surface rather than growing
+# a second one.
+
+_plan_state: dict[str, Any] = {"status": "idle", "week": None, "plan_id": None, "error": None}
+
+
+async def _run_plan(week: str | None) -> None:
+    from .coach import CoachUnavailable
+
+    _plan_state.update({"status": "running", "week": week, "plan_id": None, "error": None})
+    try:
+        from .coach.agent import propose_week
+        from .coach.assembler import assemble
+
+        with repo() as repository:
+            result = await propose_week(
+                repository, _config, date.fromisoformat(week) if week else None
+            )
+            if not result.get("proposal"):
+                raise RuntimeError("the coach returned no proposal")
+            assembled = assemble(repository, _config, result, persist=True)
+
+        plan = assembled["plan"]
+        _plan_state.update(
+            {
+                "status": "done",
+                "week": plan.week_start.isoformat(),
+                "plan_id": plan.id,
+                "problems": assembled["problems"],
+                "planned_by": result.get("planned_by"),
+                "fell_back": bool(result.get("fell_back_from")),
+            }
+        )
+    except CoachUnavailable as exc:
+        # A missing extra is a setup problem, not a failure of the coach, and
+        # the callout should be able to say which.
+        _plan_state.update({"status": "unavailable", "error": str(exc)})
+    except Exception as exc:  # noqa: BLE001 - surface the failure to the callout
+        _plan_state.update({"status": "error", "error": f"{type(exc).__name__}: {exc}"})
+
+
+@app.post("/api/plan")
+async def start_plan(background: BackgroundTasks, week: str | None = Query(None)) -> dict[str, Any]:
+    """Generate a week in the background. Nothing reaches Hevy from here."""
+    if week is not None:
+        try:
+            date.fromisoformat(week)
+        except ValueError as exc:
+            raise HTTPException(400, f"Unrecognised week {week!r}; expected YYYY-MM-DD") from exc
+
+    if _plan_state["status"] == "running":
+        return {"status": "running", "detail": "a plan is already being generated"}
+
+    background.add_task(_run_plan, week)
+    return {"status": "started"}
+
+
+@app.get("/api/plan/status")
+def plan_status() -> dict[str, Any]:
+    return _plan_state
+
+
+class PlanDecision(BaseModel):
+    status: str = Field(description="approved or rejected")
+
+
+@app.put("/api/plan/{plan_id}")
+def decide_plan(plan_id: int, decision: PlanDecision) -> dict[str, Any]:
+    """Accept or reject a proposed week. A ledger state change, no Hevy call.
+
+    Only these two transitions are offered: `superseded` is what storage does
+    when a revision replaces a plan, not something a user declares.
+    """
+    if decision.status not in {"approved", "rejected"}:
+        raise HTTPException(400, "status must be approved or rejected")
+
+    with repo() as repository:
+        plan = repository.get_plan(plan_id)
+        if plan is None:
+            raise HTTPException(404, f"no plan {plan_id}")
+        if plan.status != "proposed":
+            raise HTTPException(409, f"plan {plan_id} is already {plan.status}")
+        repository.set_plan_status(plan_id, decision.status)
+
+    return {"id": plan_id, "status": decision.status}
+
+
+class SessionRoutine(BaseModel):
+    session_date: str = Field(description="which planned day to write, YYYY-MM-DD")
+    title: str = Field(default="", max_length=120)
+
+
+@app.post("/api/plan/{plan_id}/routine")
+def propose_plan_routine(plan_id: int, request: SessionRoutine) -> dict[str, Any]:
+    """Draft a Hevy routine from one planned lifting session. No Hevy call here.
+
+    The set counts are the allocator's, carried through rather than flattened to
+    a default -- they are the whole reason `planning.py` exists, and a routine
+    that quietly wrote three of everything would discard the allocation the week
+    was built on.
+    """
+    try:
+        day = date.fromisoformat(request.session_date)
+    except ValueError as exc:
+        raise HTTPException(400, f"Unrecognised date {request.session_date!r}") from exc
+
+    with repo() as repository:
+        plan = repository.get_plan(plan_id)
+        if plan is None:
+            raise HTTPException(404, f"no plan {plan_id}")
+
+        sessions = [s for s in plan.sessions if s.kind == "lift" and s.local_date == day]
+        if not sessions:
+            raise HTTPException(404, f"plan {plan_id} has no lifting session on {day}")
+
+        session = sessions[0]
+        counts = {e.exercise_template_id: e.sets for e in session.exercises}
+        title = request.title.strip() or f"{session.focus or 'Session'} - {day}"
+
+        proposal = writeback.build_routine(
+            repository,
+            _config,
+            title,
+            [e.exercise_template_id for e in session.exercises],
+            sets_by_exercise=counts,
+        )
+        if not proposal.exercises:
+            raise HTTPException(400, "none of that session's exercises exist in Hevy")
+
+        difference = writeback.diff(proposal)
+        proposal_id = repository.record_proposal(
+            "routine", proposal.summary(), proposal.as_payload(), difference
+        )
+
+    return {
+        "id": proposal_id,
+        "summary": proposal.summary(),
+        "payload": proposal.as_payload(),
+        "diff": difference,
+        "status": "proposed",
+        "plan_id": plan_id,
+        "session_date": day.isoformat(),
+    }
+
+
+# --- goals, targets and availability ----------------------------------------
+# Without these the running target cannot be set from the UI, and declaring a
+# day lost -- the thing meant to trigger a replan -- stays a terminal command.
+
+
+@app.get("/api/goals")
+def get_goals(include_inactive: bool = Query(False)) -> dict[str, Any]:
+    with repo() as repository:
+        target = repository.get_running_target()
+        return {
+            "goals": [
+                {
+                    "id": goal.id,
+                    "type": goal.type,
+                    "subject": goal.subject,
+                    "target_value": goal.target_value,
+                    "target_date": goal.target_date.isoformat() if goal.target_date else None,
+                    "status": goal.status,
+                }
+                for goal in repository.get_goals(include_inactive=include_inactive)
+            ],
+            "running_target": target.as_dict() if target else None,
+        }
+
+
+class NewGoal(BaseModel):
+    type: str
+    target_value: float
+    subject: str | None = None
+    target_date: str | None = None
+
+
+@app.post("/api/goals")
+def add_goal(request: NewGoal) -> dict[str, Any]:
+    from .models import Goal
+
+    try:
+        goal = Goal(
+            type=request.type,
+            target_value=request.target_value,
+            subject=request.subject,
+            target_date=date.fromisoformat(request.target_date) if request.target_date else None,
+        )
+    except ValueError as exc:
+        # Model validation, so every entry point rejects exactly the same things.
+        raise HTTPException(400, str(exc)) from exc
+
+    with repo() as repository:
+        stored = repository.add_goal(goal)
+    return {"id": stored.id, "status": stored.status}
+
+
+class GoalDecision(BaseModel):
+    status: str = Field(description="achieved or abandoned")
+
+
+@app.put("/api/goals/{goal_id}")
+def close_goal(goal_id: int, decision: GoalDecision) -> dict[str, Any]:
+    if decision.status not in {"achieved", "abandoned"}:
+        raise HTTPException(400, "status must be achieved or abandoned")
+    with repo() as repository:
+        if not repository.set_goal_status(goal_id, decision.status):
+            raise HTTPException(404, f"no goal {goal_id}")
+    return {"id": goal_id, "status": decision.status}
+
+
+class NewRunningTarget(BaseModel):
+    distance_km_per_week: float = Field(ge=0)
+    sessions_per_week: int = Field(default=2, ge=0, le=14)
+
+
+@app.put("/api/running-target")
+def set_running_target(request: NewRunningTarget) -> dict[str, Any]:
+    """Without a running target the priority ranking's third rank has nothing to
+    measure, so running cannot be protected when the week is tight."""
+    from .models import RunningTarget
+
+    target = RunningTarget(
+        distance_km_per_week=request.distance_km_per_week,
+        sessions_per_week=request.sessions_per_week,
+    )
+    with repo() as repository:
+        repository.set_running_target(target)
+    return target.as_dict()
+
+
+@app.get("/api/availability")
+def get_availability(week: str | None = Query(None)) -> dict[str, Any]:
+    """The declared exceptions for a week. A day with no row is available."""
+    from datetime import timedelta
+
+    from .coach.context import next_monday
+
+    try:
+        monday = date.fromisoformat(week) if week else next_monday()
+    except ValueError as exc:
+        raise HTTPException(400, f"Unrecognised week {week!r}; expected YYYY-MM-DD") from exc
+
+    with repo() as repository:
+        entries = repository.get_availability(monday, monday + timedelta(days=7))
+
+    return {
+        "week_start": monday.isoformat(),
+        "unavailable": [entries[day].as_dict() for day in sorted(entries)],
+    }
+
+
+class DayOff(BaseModel):
+    date: str
+    reason: str | None = None
+
+
+@app.put("/api/availability")
+def set_availability(request: DayOff) -> dict[str, Any]:
+    """Declare a day lost. This is what triggers a replan."""
+    from .models import Availability
+
+    try:
+        day = date.fromisoformat(request.date)
+    except ValueError as exc:
+        raise HTTPException(400, f"Unrecognised date {request.date!r}") from exc
+
+    entry = Availability(local_date=day, reason=request.reason)
+    with repo() as repository:
+        repository.set_availability(entry)
+    return entry.as_dict()
+
+
+@app.delete("/api/availability/{day}")
+def clear_availability(day: str) -> dict[str, Any]:
+    try:
+        parsed = date.fromisoformat(day)
+    except ValueError as exc:
+        raise HTTPException(400, f"Unrecognised date {day!r}") from exc
+
+    with repo() as repository:
+        cleared = repository.clear_availability(parsed)
+    return {"date": parsed.isoformat(), "cleared": cleared}
+
+
 class ChatRequest(BaseModel):
     question: str
     section: str = "run"

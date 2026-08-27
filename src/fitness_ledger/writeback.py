@@ -80,12 +80,18 @@ def build_routine(
     title: str,
     exercise_ids: list[str],
     sets_per_exercise: int = 3,
+    sets_by_exercise: dict[str, int] | None = None,
 ) -> Proposal:
     """Draft a routine from current double-progression state.
 
     Each exercise is loaded at the weight the engine says comes next: the
     suggested step if every set hit the top of its range, otherwise the weight
     currently being worked. Nothing is invented.
+
+    `sets_by_exercise` overrides the flat count per exercise, which is how a
+    planned session reaches Hevy with the counts `planning.py` allocated rather
+    than a uniform three. It is the allocator's number or the caller's default;
+    there is deliberately no third source, and never the model's.
     """
     templates = repo.get_templates()
     overrides = rep_ranges(repo, config)
@@ -103,6 +109,7 @@ def build_routine(
         template = templates.get(template_id)
         if template is None:
             continue
+        count = (sets_by_exercise or {}).get(template_id, sets_per_exercise)
         rep_range = overrides.get(template_id, default)
         state = progression_state(
             sets, template_id, template.title,
@@ -130,7 +137,7 @@ def build_routine(
             ProposedExercise(
                 exercise_template_id=template_id,
                 title=template.title,
-                sets=[ProposedSet(weight_kg=weight, reps=reps) for _ in range(sets_per_exercise)],
+                sets=[ProposedSet(weight_kg=weight, reps=reps) for _ in range(count)],
                 notes=None,
                 rationale=rationale,
             )
