@@ -113,12 +113,17 @@ def test_the_no_arithmetic_rule_is_stated_to_both():
     assert "Never do arithmetic" in RUNNING_INSTRUCTION
 
 
-def test_the_strength_planner_is_told_not_to_choose_its_own_window():
-    # The failure this fixed: left to itself it called get_volume_vs_target
-    # with 'this-week', a barely-started week where every muscle reads as a
-    # full target short, then planned against that.
+def test_the_strength_planner_cannot_choose_its_own_window():
+    """Once an instruction, now a fact: the tool is not offered at all.
+
+    Left to itself it called get_volume_vs_target with 'this-week' -- a
+    barely-started week where every muscle reads as a full target short -- and
+    planned against that. Being told not to was not enough; three of ten runs
+    did it anyway, which is why the instruction now describes the absence
+    rather than forbidding the act.
+    """
     flat = " ".join(STRENGTH_INSTRUCTION.split())
-    assert "do not pick your own window" in flat
+    assert "no tool to recompute it" in flat
     assert "part-finished week" in flat
 
 
@@ -348,3 +353,23 @@ def test_both_planners_sample_deterministically(bound):
     assert PLANNER_TEMPERATURE == 0.0
     for planner in (strength, running):
         assert planner.generate_content_config.temperature == PLANNER_TEMPERATURE
+
+
+def test_the_strength_planner_cannot_recompute_the_deficit(bound):
+    """Three of ten runs called get_volume_vs_target despite being told not to.
+
+    Removing the tool beats repeating the instruction: choosing its own window
+    is how the planner once planned against a fabricated shortfall, and a rule
+    the model *can* break is one that eventually gets broken. Everything it
+    would have fetched is already injected.
+    """
+    pytest.importorskip("google.adk", reason="coach extra not installed")
+    from fitness_ledger.coach.agent import build_coach
+
+    repo, config = bound
+    _, strength, _ = build_coach(repo, config).sub_agents
+
+    names = {getattr(t, "__name__", getattr(getattr(t, "func", None), "__name__", "")) for t in strength.tools}
+    assert names == {"get_exercise_pool", "get_progression_state"}
+    assert "get_volume_vs_target" not in names
+    assert "get_neglected" not in names

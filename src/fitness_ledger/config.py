@@ -9,7 +9,7 @@ We only point at them.
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, field
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -29,6 +29,14 @@ def _env(name: str, default: str | None = None) -> str:
 
 @dataclass(frozen=True)
 class Config:
+    """Settings, loaded from .env.
+
+    **Secrets carry `repr=False`.** A dataclass prints every field, so without
+    it one traceback anywhere -- an API 500, a CLI crash, a failing assertion --
+    puts an API key into a log, a terminal, or a bug report. That happened once,
+    in pytest output, which is exactly the kind of place nobody thinks to check.
+    """
+
     """Runtime configuration.
 
     The tunables in the second block are the conventions the plan flags as
@@ -41,10 +49,10 @@ class Config:
     # --- data sources (stdio MCP servers) ---
     hevy_command: str
     hevy_args: list[str]
-    hevy_env: dict[str, str]
+    hevy_env: dict[str, str] = field(repr=False)
     health_command: str
     health_args: list[str]
-    health_env: dict[str, str]
+    health_env: dict[str, str] = field(repr=False)
 
     # --- tunable conventions ---
     secondary_weight: float = 0.5
@@ -60,21 +68,37 @@ class Config:
     # free one. See llm.py for the transports.
     llm_provider: str | None = None
 
-    anthropic_api_key: str | None = None
+    anthropic_api_key: str | None = field(default=None, repr=False)
     anthropic_model: str = "claude-opus-5"
 
-    gemini_api_key: str | None = None
+    gemini_api_key: str | None = field(default=None, repr=False)
     gemini_model: str = "gemini-2.5-flash"
 
     # Escape hatch for any other /chat/completions server (Groq, OpenRouter, a
     # self-hosted vLLM). Also overrides the base URL for the named providers.
     llm_base_url: str | None = None
     llm_model: str | None = None
-    llm_api_key: str | None = None
+    llm_api_key: str | None = field(default=None, repr=False)
     # Reasoning models spend `max_tokens` on thinking before writing anything.
     # This app forbids the model from reasoning about numbers, so the default is
     # to switch it off where the provider supports it. "off" sends no parameter.
     llm_reasoning_effort: str | None = None
+
+    # A second provider for the coach only, used when the first refuses.
+    # Planning is the one place a quota error is fatal rather than annoying:
+    # the dock can say "ask again in a minute", but a week that will not
+    # generate is just absent. Any OpenAI-compatible endpoint.
+    coach_fallback_base_url: str | None = None
+    coach_fallback_model: str | None = None
+    coach_fallback_api_key: str | None = field(default=None, repr=False)
+
+    @property
+    def has_coach_fallback(self) -> bool:
+        return bool(
+            self.coach_fallback_base_url
+            and self.coach_fallback_model
+            and self.coach_fallback_api_key
+        )
 
     @classmethod
     def load(cls) -> "Config":
@@ -102,6 +126,9 @@ class Config:
             llm_base_url=os.environ.get("LLM_BASE_URL") or None,
             llm_model=os.environ.get("LLM_MODEL") or None,
             llm_api_key=os.environ.get("LLM_API_KEY") or None,
+            coach_fallback_base_url=os.environ.get("COACH_FALLBACK_BASE_URL") or None,
+            coach_fallback_model=os.environ.get("COACH_FALLBACK_MODEL") or None,
+            coach_fallback_api_key=os.environ.get("COACH_FALLBACK_API_KEY") or None,
             llm_reasoning_effort=os.environ.get("LLM_REASONING_EFFORT") or None,
         )
 

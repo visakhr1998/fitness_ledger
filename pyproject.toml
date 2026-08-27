@@ -20,7 +20,11 @@ dev = ["pytest>=8.0", "httpx>=0.27"]
 # dependencies and nothing else here needs them -- the dashboard, sync, CLI and
 # chat dock all work without it, and a clone that never plans shouldn't carry
 # the weight. See src/fitness_ledger/coach/.
-coach = ["google-adk>=2.6"]
+# [extensions] pulls LiteLLM, which is how ADK reaches anything that is not
+# Gemini. Included rather than a further extra: the point of the provider
+# indirection is that swapping models is a config change, and a swap that
+# also needs a reinstall is not one.
+coach = ["google-adk[extensions]>=2.6"]
 
 [project.scripts]
 ledger = "fitness_ledger.cli:main"

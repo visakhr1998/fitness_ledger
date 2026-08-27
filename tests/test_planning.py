@@ -128,7 +128,7 @@ def test_runs_carry_their_distance_and_no_sets():
 def test_a_muscle_no_exercise_serves_is_reported_not_silently_lost():
     week = [lift(MON, ("a", ["chest"]))]
 
-    result = allocate(week, {"chest": 6, "calves": 8})
+    result = allocate(week, {"chest": 6, "calves": 8}, deficits={"chest": 6, "calves": 8})
 
     assert result.unplaced == ("calves",)
     assert result.unmet["calves"] == 8.0
@@ -138,7 +138,7 @@ def test_a_deficit_too_big_for_the_week_is_reported_as_still_short():
     """The honest half: a week has finite days and finite sets in a day."""
     week = [lift(MON, ("a", ["chest"]))]
 
-    result = allocate(week, {"chest": 20})
+    result = allocate(week, {"chest": 20}, deficits={"chest": 20})
 
     assert result.sessions[0].exercises[0].sets == MAX_SETS_PER_EXERCISE
     assert result.unmet["chest"] == pytest.approx(14.0)
@@ -231,3 +231,64 @@ def test_validation_reports_every_problem_not_just_the_first():
     problems = validate(week, pool_ids={"other"}, training_days={FRI.isoformat()})
 
     assert len(problems) == 2
+
+
+# --- the target is the amount; the deficit only ranks -----------------------
+
+
+def test_a_consistent_week_is_not_punished():
+    """The bug this replaced: allocation used last week's shortfall as the
+    amount, so chest at 10 of a 14-set target got a 4-set week and someone who
+    hit the target exactly got a week with nothing in it. A deficit says how
+    far behind you fell -- it was never the amount to train."""
+    week = [lift(MON, ("a", ["chest"])), lift(WED, ("b", ["chest"]))]
+
+    for trained in (0, 10, 13, 14):
+        short = max(14 - trained, 0)
+        result = allocate(week, {"chest": 14}, deficits={"chest": short} if short else {})
+        assert result.total_sets == 12, f"trained {trained}: {result.total_sets}"
+
+
+def test_nothing_short_still_earns_a_full_week():
+    week = [lift(MON, ("a", ["chest"])), lift(WED, ("b", ["lats"]))]
+
+    result = allocate(week, {"chest": 12, "lats": 12}, deficits={})
+
+    assert result.total_sets > 0
+    assert result.unmet == {}
+
+
+def test_a_muscle_the_week_ignores_gets_nothing_allocated():
+    """The agent decides what the week is about. Allocating for a muscle it did
+    not choose would be planning on its behalf."""
+    week = [lift(MON, ("a", ["chest"]))]
+
+    result = allocate(week, {"chest": 12, "quadriceps": 14})
+
+    assert result.total_sets == 6  # chest only, capped per exercise
+
+
+def test_the_ceiling_takes_from_whatever_is_least_behind():
+    """The priority ranking, applied at the only point the week is forced to
+    choose. A set removed from a muscle already on target costs less than one
+    removed from a muscle three weeks neglected."""
+    week = [lift(MON, ("neglected", ["lats"]), ("fine", ["chest"]))]
+    prefs = Preferences(max_sets_per_session=8)
+
+    result = allocate(
+        week,
+        {"lats": 12, "chest": 12},
+        prefs,
+        deficits={"lats": 12},  # chest is on target
+    )
+
+    by_title = {e.title: e.sets for e in result.sessions[0].exercises}
+    assert by_title["Neglected"] > by_title["Fine"]
+
+
+def test_without_deficits_it_still_allocates():
+    """Ranking is optional; the amount is not."""
+    week = [lift(MON, ("a", ["chest"]))]
+
+    # One exercise carries the whole 10, clamped to the per-exercise ceiling.
+    assert allocate(week, {"chest": 10}).total_sets == MAX_SETS_PER_EXERCISE

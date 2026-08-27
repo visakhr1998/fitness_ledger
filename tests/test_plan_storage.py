@@ -148,9 +148,9 @@ def a_result() -> dict:
         "ledger_state": {
             "volume": {
                 "muscles": [
-                    {"muscle_group": "chest", "sets_deficit": 6},
-                    {"muscle_group": "calves", "sets_deficit": 8},
-                    {"muscle_group": "lats", "sets_deficit": 0},
+                    {"muscle_group": "chest", "sets_deficit": 6, "target_sets": 6},
+                    {"muscle_group": "calves", "sets_deficit": 8, "target_sets": 8},
+                    {"muscle_group": "lats", "sets_deficit": 0, "target_sets": 14},
                 ]
             }
         },
@@ -251,3 +251,79 @@ def test_a_week_with_no_plan_of_its_own_is_not_silently_another_weeks(repo):
     view = plan_section(repo, Config.load(), "2026-09-07")
 
     assert view["available"] is False
+
+
+# --- exercises the agent named but did not describe -------------------------
+
+
+def a_pool():
+    return [
+        {
+            "exercise_template_id": "CALF",
+            "title": "Calf Raise",
+            "primary_muscle_group": "calves",
+            "secondary_muscle_groups": [],
+        },
+        {
+            "exercise_template_id": "ROW",
+            "title": "Barbell Row",
+            "primary_muscle_group": "upper_back",
+            "secondary_muscle_groups": ["lats", "biceps"],
+        },
+    ]
+
+
+def a_session(exercises):
+    return [{"session_date": WEEK.isoformat(), "kind": "lift", "exercises": exercises}]
+
+
+def test_an_exercise_with_no_targets_is_looked_up_not_discarded():
+    """Observed in a real run: the agent proposed `Calf Raise` with an empty
+    targets list. Allocation works from targets, so it was worth nothing, got
+    zero sets and vanished -- leaving a week of four sets."""
+    from fitness_ledger.coach.assembler import with_targets
+
+    filled = with_targets(
+        a_session([{"exercise_template_id": "CALF", "title": "Calf Raise", "targets": []}]),
+        a_pool(),
+    )
+
+    assert filled[0]["exercises"][0]["targets"] == ["calves"]
+
+
+def test_the_lookup_takes_secondaries_too():
+    from fitness_ledger.coach.assembler import with_targets
+
+    filled = with_targets(
+        a_session([{"exercise_template_id": "ROW", "title": "Barbell Row", "targets": []}]),
+        a_pool(),
+    )
+
+    assert filled[0]["exercises"][0]["targets"] == ["upper_back", "lats", "biceps"]
+
+
+def test_what_the_agent_did_say_is_left_alone():
+    """It chose those muscles for a reason -- it may be using a compound for
+    one head of it. Overriding a stated intent would be worse than filling a
+    silence."""
+    from fitness_ledger.coach.assembler import with_targets
+
+    filled = with_targets(
+        a_session([{"exercise_template_id": "ROW", "title": "Barbell Row", "targets": ["lats"]}]),
+        a_pool(),
+    )
+
+    assert filled[0]["exercises"][0]["targets"] == ["lats"]
+
+
+def test_an_unknown_exercise_is_left_as_it_came():
+    """Nothing to look it up with. It will fail pool validation, which is the
+    right place to say so."""
+    from fitness_ledger.coach.assembler import with_targets
+
+    filled = with_targets(
+        a_session([{"exercise_template_id": "GHOST", "title": "?", "targets": []}]),
+        a_pool(),
+    )
+
+    assert filled[0]["exercises"][0]["targets"] == []

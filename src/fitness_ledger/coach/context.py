@@ -76,12 +76,13 @@ def gather_context(
     """
     week = week_start or next_monday()
     tools = {tool.__name__: tool for tool in build_tools(repo, config)}
+    volume = tools["get_volume_vs_target"](PLANNING_WINDOW)
 
     return {
         "week_start": week.isoformat(),
         "goals": tools["get_goals"](),
         "ledger_state": {
-            "volume": tools["get_volume_vs_target"](PLANNING_WINDOW),
+            "volume": volume,
             "volume_trend": tools["get_volume_vs_target"](TREND_WINDOW),
             "progression": tools["get_progression_state"](),
             "runs": tools["get_recent_runs"](RUN_WINDOW),
@@ -89,9 +90,49 @@ def gather_context(
             "insights": tools["get_insights"](),
         },
         "availability": tools["get_availability"](week.isoformat()),
-        "exercise_pool": tools["get_exercise_pool"](),
+        "exercise_pool": covering_pool(tools, volume),
         "previous_plan": tools["get_previous_plan"](),
     }
+
+
+# How many unlogged exercises to add per uncovered muscle. Two is enough to
+# choose between without turning the pool into the whole catalog.
+EXTRA_PER_MUSCLE = 2
+
+
+def covering_pool(tools: dict[str, Any], volume: dict[str, Any]) -> list[dict[str, Any]]:
+    """The logged pool, plus something for every muscle that is short.
+
+    The default pool is what the user actually trains, which is the right
+    starting point and the wrong finishing one: **a muscle you have never
+    trained has no logged exercises, so it cannot appear.** Those are exactly
+    the muscles most likely to be neglected, and the coach was being asked to
+    fix a back deficit while holding a list containing no back exercises.
+
+    Found by an eval: the plan for a three-week back gap was a squat. The
+    stronger model worked around it by querying the tool again with different
+    arguments; the smaller one did not, and neither should have had to.
+    """
+    pool = tools["get_exercise_pool"]()
+    covered = {
+        muscle
+        for row in pool
+        for muscle in (row["primary_muscle_group"], *row["secondary_muscle_groups"])
+        if muscle
+    }
+    known = {row["exercise_template_id"] for row in pool}
+
+    short = [
+        row["muscle_group"]
+        for row in volume.get("muscles", [])
+        if (row.get("sets_deficit") or 0) > 0 and row["muscle_group"] not in covered
+    ]
+    for muscle in short:
+        for row in tools["get_exercise_pool"](muscle, False)[:EXTRA_PER_MUSCLE]:
+            if row["exercise_template_id"] not in known:
+                known.add(row["exercise_template_id"])
+                pool.append(row)
+    return pool
 
 
 def continuity_summary(context: dict[str, Any]) -> str:
