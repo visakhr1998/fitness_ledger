@@ -40,14 +40,15 @@ encoded rule in the system.
 
 ```
 CLI ─┐
-     ├─► queries.py ──► volume.py · progression.py · insights.py
+     ├─► queries.py ──► volume.py · progression.py · insights.py · aei.py
 API ─┘        │              (rules engine: pure, tested, no I/O)
               ▼
           db.py (Repository interface ─► SQLite)
               ▲
           sync.py ──► mcp_client.py ──► Hevy MCP · Google Health MCP
-          chat.py ──► queries.py as tools
-             └──► llm.py (transports: anthropic · openai-compatible)
+
+          chat.py ──► queries.py as tools ──► llm.py (provider transports)
+          coach/  ──► planning.py (set allocation) ──► assembler ──► Plan
 ```
 
 - **The rules engine is pure.** `volume.py`, `progression.py` and `insights.py`
@@ -66,7 +67,7 @@ API ─┘        │              (rules engine: pure, tested, no I/O)
 
 ## Conventions that are values, not laws
 
-All configurable in `.env`; documented in the README.
+All configurable in `.env`; documented in `docs/how-it-works.md`.
 
 | Setting | Default | Meaning |
 |---|---|---|
@@ -178,7 +179,7 @@ Two rules, both learned the hard way:
 ## Working here
 
 ```bash
-./.venv/Scripts/python.exe -m pytest              # 466 tests, keep them green
+./.venv/Scripts/python.exe -m pytest              # 466 tests (455 without the coach extra)
 cd frontend && npm run build                      # required after any frontend change
 ./.venv/Scripts/python.exe -m fitness_ledger.cli doctor
 ./.venv/Scripts/python.exe -m fitness_ledger.cli sync
@@ -275,6 +276,23 @@ per plan in `UNDERSTANDING.md` -- and never a looser assertion.
 - **The chat dock needs *a* model provider, not a specific one.** Gemini's free
   tier is the default; `ollama` runs it locally. Without any provider the dock
   says so; the rest of the dashboard must never depend on one.
+
+## Where documentation lives
+
+- `README.md` — install and daily use. Written for someone who has never seen
+  the repo and may not be a developer.
+- `docs/how-it-works.md` — set counting, time windows, progression, warning
+  rules, running efficiency. The one doc a user reads by choice.
+- `docs/model-providers.md` — configuring a model. Optional for the reader.
+- `docs/architecture.md` — code layout, the planner, the write-back safety
+  model. For contributors.
+- `CONTRIBUTING.md` — tests, the frontend build, what a change needs, the
+  upstream-bug policy.
+- **This file** — what an agent working here needs that is not in the above.
+
+**Do not restate a public doc here.** The endpoint list lives at `/docs`, not in
+prose: a hand-maintained copy was wrong in three parameter names within a week
+of being written. When a fact belongs in a public doc, put it there and link.
 
 ## Keeping UNDERSTANDING.md current
 

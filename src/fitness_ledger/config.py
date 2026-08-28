@@ -72,7 +72,10 @@ class Config:
     anthropic_model: str = "claude-opus-5"
 
     gemini_api_key: str | None = field(default=None, repr=False)
-    gemini_model: str = "gemini-2.5-flash"
+    # Not 2.5-flash: it returns 404 "no longer available to new users" on a
+    # fresh key, so defaulting to it broke the first plan of every new clone
+    # with an error that reads like a bad key.
+    gemini_model: str = "gemini-3.6-flash"
 
     # Escape hatch for any other /chat/completions server (Groq, OpenRouter, a
     # self-hosted vLLM). Also overrides the base URL for the named providers.
@@ -122,7 +125,7 @@ class Config:
             anthropic_api_key=os.environ.get("ANTHROPIC_API_KEY") or None,
             anthropic_model=os.environ.get("ANTHROPIC_MODEL", "claude-opus-5"),
             gemini_api_key=os.environ.get("GEMINI_API_KEY") or None,
-            gemini_model=os.environ.get("GEMINI_MODEL", "gemini-2.5-flash"),
+            gemini_model=os.environ.get("GEMINI_MODEL", "gemini-3.6-flash"),
             llm_base_url=os.environ.get("LLM_BASE_URL") or None,
             llm_model=os.environ.get("LLM_MODEL") or None,
             llm_api_key=os.environ.get("LLM_API_KEY") or None,

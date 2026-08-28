@@ -58,7 +58,7 @@ def test_an_explicit_google_api_key_is_not_overridden(monkeypatch):
 
 
 def test_the_default_model_is_the_gemini_one():
-    assert configure_adk_environment(config(gemini_api_key="k")) == "gemini-2.5-flash"
+    assert configure_adk_environment(config(gemini_api_key="k")) == "gemini-3.6-flash"
 
 
 def test_llm_model_applies_when_the_dock_is_on_gemini():
@@ -78,7 +78,7 @@ def test_a_model_belonging_to_another_provider_is_ignored():
     model = configure_adk_environment(
         config(gemini_api_key="k", llm_provider="ollama", llm_model="qwen3:4b")
     )
-    assert model == "gemini-2.5-flash"
+    assert model == "gemini-3.6-flash"
 
 
 # --- providers that are not Gemini ------------------------------------------
