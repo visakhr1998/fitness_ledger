@@ -108,7 +108,7 @@ def test_explicit_provider_beats_auto_detection():
 
 
 def test_llm_model_overrides_every_provider_default():
-    assert llm.model_name(config(gemini_api_key="g")) == "gemini-2.5-flash"
+    assert llm.model_name(config(gemini_api_key="g")) == "gemini-3.6-flash"
     assert llm.model_name(config(gemini_api_key="g", llm_model="gemini-3.5-flash")) == "gemini-3.5-flash"
     assert llm.model_name(config(llm_provider="ollama")) == "qwen3:4b"
 
