@@ -10,12 +10,18 @@ parallel by tracking **volume per muscle group against targets**. Data comes fro
 Hevy (lifts) and Google Health (runs, sleep, resting HR) via local stdio MCP
 servers.
 
-**Current state: v0.3 complete.** v0.1 was the deterministic core (sync, volume
-math, CLI); v0.2 added the FastAPI backend, a dashboard, double-progression state
-and insight rules; v0.3 split the UI into Run and Gym on React + Vite, added the
-Aerobic Efficiency Index, vitals, a coach and chat dock, and approval-gated Hevy
-write-back. v0.4 is hosting and scheduled runs. Full plan lives in the roadmap the user supplied — ask for it if
-a decision seems to depend on it.
+**Current state: v0.3 complete, including the coach.** v0.1 was the
+deterministic core (sync, volume math, CLI); v0.2 added the FastAPI backend, a
+dashboard, double-progression state and insight rules; v0.3 split the UI into
+Run and Gym on React + Vite and added the Aerobic Efficiency Index, vitals, a
+chat dock and approval-gated Hevy write-back. The ten-day coach plan finished on
+2026-08-28: the `Week` tab now generates a plan, accepts or rejects it, takes a
+day away, and sends a single lifting day to Hevy behind the diff.
+
+v0.4 is hosting and scheduled runs. The last item outstanding from v0.3 scope is
+the `drift` rule. Fuller history, and the reasoning behind decisions that are
+not obvious from the code, is in `UNDERSTANDING.md` (git-ignored, this machine
+only).
 
 ## Design principles — these govern every decision
 
@@ -58,7 +64,10 @@ API ─┘        │              (rules engine: pure, tested, no I/O)
   the system prompt forbids arithmetic. Never let an LLM do the maths. The coach
   is the hardest case: `planning.py` allocates its set counts and is pure, so it
   sits with the rules engine rather than in `coach/`, which imports the database.
-- **Only `sync.py` talks to the MCP servers.** Everything else reads the cache.
+- **`sync.py` is the only thing that *reads* from the MCP servers.** Everything
+  else reads the cache. Two places call out directly and deliberately: `doctor`
+  pings both servers to check they answer, and approving a Hevy write-back sends
+  the routine. Do not add a third.
 - **The API is a thin wrapper over `queries.py`.** No computation in `api.py`, so
   the API and CLI can never disagree about a number.
 - **A repository interface sits between the engine and SQLite** so the v0.4 move
@@ -215,6 +224,11 @@ option against the same eval fixture -- three weeks with no back work.
 - `gemini-3.6-flash` planned 4 sessions and 64 sets, opening with a Lat
   Pulldown. Stable across runs.
 
+`config.py` defaults to `gemini-3.6-flash` as of 2026-08-28. It previously
+defaulted to `gemini-2.5-flash` -- the row above -- so a clone that never set
+`GEMINI_MODEL` failed its first plan with a 404 that reads like a bad key. Three
+tests asserted that default, pinning the bug.
+
 **Nothing may assume a model id.** One became unavailable mid-project; the
 provider indirection in `llm.py` is what made that survivable.
 
@@ -260,14 +274,16 @@ per plan in `UNDERSTANDING.md` -- and never a looser assertion.
   `build_routine`.
 - **The `drift` insight rule is unblocked but not written.** It compares logged
   sessions against *planned* ones, which needed `Plan` and `Availability` to
-  exist. Both now do, so the blocker is gone — the rule itself is still to do.
+  exist. Both now do, so the blocker is gone — the rule itself is still to do,
+  and it is the last item outstanding from v0.3 scope.
 - **ADK is in, for the coach only.** The earlier "don't add ADK yet" line was
   written about `chat.py`, whose 48-line stateless loop genuinely does not need
   a harness, and that is still true — `chat.py` is untouched and stays that way.
   The coach is a different problem: multi-agent delegation, session state and
   week-over-week continuity a stateless call cannot express. It is an **optional
-  extra** (`pip install -e ".[coach]"`), so nothing else depends on its 25
-  dependencies, and the dashboard must keep working without it.
+  extra** (`pip install -e ".[coach]"`), so nothing else depends on it: ADK
+  declares 25 direct dependencies and resolves to roughly 118 packages. The
+  dashboard must keep working without it.
 - **The agent never emits a set count.** It chooses exercises and days;
   `planning.py` computes every number from the tool-reported deficit. This is
   enforced by shape, not by instruction — `WeekProposal` has nowhere to put a

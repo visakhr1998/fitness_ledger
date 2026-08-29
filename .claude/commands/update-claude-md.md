@@ -14,8 +14,9 @@ Do not update from memory of the conversation — read the repo.
 
 1. `git log --oneline -20` and `git status --short` — what has landed since the
    last CLAUDE.md change, and what is uncommitted.
-2. `README.md` — the user-facing description. CLAUDE.md complements it; it does
-   not duplicate it.
+2. `README.md`, `docs/*.md` and `CONTRIBUTING.md` — the public documentation.
+   CLAUDE.md complements these; it does not duplicate them. Note what each
+   already covers, so you do not restate it.
 3. `src/fitness_ledger/` — the module list and what each does. Check whether the
    architecture diagram in CLAUDE.md still matches reality.
 4. `src/fitness_ledger/config.py` and `.env.example` — the current tunables and
@@ -25,6 +26,16 @@ Do not update from memory of the conversation — read the repo.
 
 ## Rules for the content
 
+- **CLAUDE.md holds only what is not already in a public doc.** If a fact
+  belongs in `README.md`, `docs/` or `CONTRIBUTING.md`, put it *there* and link
+  to it from here rather than copying it. This boundary exists because
+  regenerating this file has twice reproduced material that had moved: a copy of
+  the architecture diagram that then drifted out of date with
+  `docs/architecture.md`, and a "documented in the README" pointer that stayed
+  after the settings table moved to `docs/how-it-works.md`.
+- **Never hand-maintain a list the tooling generates.** The API endpoint table
+  was wrong in three path parameters within a week of being written; FastAPI
+  serves the correct one at `/docs`.
 - **Only what a future session could not derive quickly from the code.** No API
   listings, no function signatures, no restating the module tree. Decisions,
   constraints, gotchas and conventions.
@@ -45,6 +56,12 @@ Do not update from memory of the conversation — read the repo.
 
 ## Finish
 
+- **Check the claims you kept, do not just carry them forward.** Two survived
+  several regenerations while being false: "Only `sync.py` talks to the MCP
+  servers" (`doctor` and write-back approval both call out directly), and a
+  dependency count that described ADK's direct requirements rather than what
+  installing it actually pulls. Verify against the code, not against the
+  previous version of this file.
 - Show the user a short summary of what changed in the file and why: added,
   removed, corrected. If nothing needed changing, say that rather than making
   edits for their own sake.
