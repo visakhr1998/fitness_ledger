@@ -86,12 +86,22 @@ const WeekGlyph = () => (
   </svg>
 );
 
-export type Section = "run" | "gym" | "week";
+/** A target: what the other three sections are measured against. */
+const HomeGlyph = () => (
+  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden>
+    <circle cx="12" cy="12" r="8.5" stroke="currentColor" strokeWidth="1.8" />
+    <circle cx="12" cy="12" r="4" stroke="currentColor" strokeWidth="1.8" />
+    <circle cx="12" cy="12" r="1.4" fill="currentColor" />
+  </svg>
+);
+
+export type Section = "home" | "run" | "gym" | "week";
 
 export function SectionTabs({
   active, onChange,
 }: { active: Section; onChange: (section: Section) => void }) {
   const tabs: { id: Section; label: string; glyph: ReactNode }[] = [
+    { id: "home", label: "Goals", glyph: <HomeGlyph /> },
     { id: "run", label: "Run", glyph: <RunGlyph /> },
     { id: "gym", label: "Gym", glyph: <GymGlyph /> },
     { id: "week", label: "Week", glyph: <WeekGlyph /> },

@@ -7,12 +7,15 @@ import {
   SectionTabs, SyncControl, ThemeControl, TimeHorizonFilter, type Section,
 } from "./components/shell";
 import { GymScreen } from "./screens/GymScreen";
+import { HomeScreen } from "./screens/HomeScreen";
 import { RunScreen } from "./screens/RunScreen";
 import { WeekScreen } from "./screens/WeekScreen";
 import "./app.css";
 
 export function App() {
-  const [section, setSection] = useState<Section>("run");
+  // Opens on Goals: the other three screens are all measured against what is
+  // set here, and it is the only one that works on a fresh clone with no data.
+  const [section, setSection] = useState<Section>("home");
   const [range, setRange] = useState<Range>({ window: "last-90-days" });
   const [reloadKey, setReloadKey] = useState(0);
 
@@ -31,13 +34,14 @@ export function App() {
           Hidden on Week: a plan is one specific week, so a filter over it says
           nothing, and leaving a dead control on screen is worse than no
           control. Same reasoning that keeps the coach strip unfiltered. */}
-      {section !== "week" && (
+      {section !== "week" && section !== "home" && (
         <div className="filterbar">
           <TimeHorizonFilter range={range} onChange={setRange} />
         </div>
       )}
 
       <main className="stack">
+        {section === "home" && <HomeScreen reloadKey={reloadKey} />}
         {section === "run" && <RunScreen range={range} reloadKey={reloadKey} />}
         {section === "gym" && <GymScreen range={range} reloadKey={reloadKey} />}
         {section === "week" && <WeekScreen reloadKey={reloadKey} />}
@@ -47,10 +51,14 @@ export function App() {
             plan's own rationale and trade-offs already are the coach talking --
             a strip of detection rules underneath would be a second, quieter
             voice saying something different. */}
-        {section !== "week" && <CoachStrip section={section} reloadKey={reloadKey} />}
+        {section !== "week" && section !== "home" && (
+          <CoachStrip section={section} reloadKey={reloadKey} />
+        )}
       </main>
 
-      <ChatDock section={section} />
+      {/* The dock reads cached training data whichever screen you are on, so it
+          stays on Goals — only its heading needs a word that reads as English. */}
+      <ChatDock section={section} label={section === "home" ? "training" : section} />
     </div>
   );
 }

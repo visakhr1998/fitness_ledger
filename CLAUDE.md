@@ -16,7 +16,9 @@ dashboard, double-progression state and insight rules; v0.3 split the UI into
 Run and Gym on React + Vite and added the Aerobic Efficiency Index, vitals, a
 chat dock and approval-gated Hevy write-back. The ten-day coach plan finished on
 2026-08-28: the `Week` tab now generates a plan, accepts or rejects it, takes a
-day away, and sends a single lifting day to Hevy behind the diff.
+day away, and sends a single lifting day to Hevy behind the diff. A `Goals` tab
+was added on 2026-08-29 and is where the app opens: it takes a goal described in
+plain English and proposes the structured records behind it.
 
 v0.4 is hosting and scheduled runs. The last item outstanding from v0.3 scope is
 the `drift` rule. Fuller history, and the reasoning behind decisions that are
@@ -188,7 +190,7 @@ Two rules, both learned the hard way:
 ## Working here
 
 ```bash
-./.venv/Scripts/python.exe -m pytest              # 466 tests (455 without the coach extra)
+./.venv/Scripts/python.exe -m pytest              # 503 tests (492 without the coach extra)
 cd frontend && npm run build                      # required after any frontend change
 ./.venv/Scripts/python.exe -m fitness_ledger.cli doctor
 ./.venv/Scripts/python.exe -m fitness_ledger.cli sync
@@ -231,6 +233,15 @@ tests asserted that default, pinning the bug.
 
 **Nothing may assume a model id.** One became unavailable mid-project; the
 provider indirection in `llm.py` is what made that survivable.
+
+**Nor may anything assume a parameter value keeps working.** `reasoning_effort`
+was `none` for Gemini until 2026-08-29, when `gemini-3.6-flash` began rejecting
+that one value with `400 INVALID_ARGUMENT: Request contains an invalid
+argument` -- an error that names no parameter and took down every Gemini
+request the app made, the chat dock included. The default is now `minimal`;
+`LLM_REASONING_EFFORT=off` omits the parameter entirely. A test asserted the
+broken value, exactly as three tests once pinned the `gemini-2.5-flash`
+default.
 
 **A fallback provider is supported, and off by default.** Set the three
 `COACH_FALLBACK_*` variables and a 429 from the primary re-runs the whole

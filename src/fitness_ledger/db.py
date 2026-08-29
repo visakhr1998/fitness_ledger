@@ -23,6 +23,7 @@ from .models import (
     Plan,
     PlannedExercise,
     PlannedSession,
+    RecurringConstraint,
     Run,
     RunningTarget,
     SetEntry,
@@ -177,6 +178,18 @@ CREATE TABLE IF NOT EXISTS availability (
     source     TEXT NOT NULL DEFAULT 'declared'
 );
 
+-- Standing weekday restrictions, unlike `availability` which records specific
+-- dates that were lost. "No high impact on Wednesdays" outlives any one week,
+-- so it is a rule rather than an exception. UNIQUE keeps a weekday from
+-- collecting duplicates of the same restriction.
+CREATE TABLE IF NOT EXISTS recurring_constraints (
+    id       INTEGER PRIMARY KEY AUTOINCREMENT,
+    weekday  INTEGER NOT NULL,
+    kind     TEXT NOT NULL,
+    reason   TEXT,
+    UNIQUE (weekday, kind)
+);
+
 -- Every write-back proposal, approved or not. Hevy has no delete endpoint, so
 -- this is the only record of what this app caused to exist.
 CREATE TABLE IF NOT EXISTS writeback_log (
@@ -233,6 +246,9 @@ class Repository(Protocol):
     def set_running_target(self, target: RunningTarget | None) -> None: ...
     def set_availability(self, entry: Availability) -> None: ...
     def get_availability(self, start: date, end: date) -> dict[date, Availability]: ...
+    def add_constraint(self, constraint: RecurringConstraint) -> RecurringConstraint: ...
+    def get_constraints(self) -> list[RecurringConstraint]: ...
+    def delete_constraint(self, constraint_id: int) -> bool: ...
     def add_plan(self, plan: Plan) -> Plan: ...
     def get_plan(self, plan_id: int) -> Plan | None: ...
     def latest_plan(self, week_start: date | None = None) -> Plan | None: ...
@@ -887,6 +903,54 @@ class SQLiteRepository:
             for row in rows
         ]
         return {entry.local_date: entry for entry in entries}
+
+    # --- recurring constraints ------------------------------------------------
+
+    def add_constraint(self, constraint: RecurringConstraint) -> RecurringConstraint:
+        """Store a standing restriction, or return the existing one unchanged.
+
+        Re-adding the same weekday and kind is a no-op rather than an error:
+        the intake parser can propose a constraint the user already has, and
+        failing that would make a correct re-statement look like a fault.
+        """
+        cur = self.conn.execute(
+            """INSERT INTO recurring_constraints (weekday, kind, reason)
+               VALUES (?, ?, ?)
+               ON CONFLICT(weekday, kind) DO UPDATE SET reason=excluded.reason""",
+            (constraint.weekday, constraint.kind, constraint.reason),
+        )
+        self.conn.commit()
+        if cur.lastrowid:
+            return replace(constraint, id=cur.lastrowid)
+        row = self.conn.execute(
+            "SELECT id FROM recurring_constraints WHERE weekday = ? AND kind = ?",
+            (constraint.weekday, constraint.kind),
+        ).fetchone()
+        return replace(constraint, id=row["id"] if row else None)
+
+    def get_constraints(self) -> list[RecurringConstraint]:
+        rows = self.conn.execute(
+            "SELECT * FROM recurring_constraints ORDER BY weekday, kind"
+        )
+        return [
+            RecurringConstraint(
+                id=row["id"],
+                weekday=row["weekday"],
+                kind=row["kind"],
+                reason=row["reason"],
+            )
+            for row in rows
+        ]
+
+    def delete_constraint(self, constraint_id: int) -> bool:
+        """Constraints are deletable, unlike goals. A goal you abandoned is
+        part of why past plans looked the way they did; a knee that stopped
+        hurting is not a fact about last month's training."""
+        cur = self.conn.execute(
+            "DELETE FROM recurring_constraints WHERE id = ?", (constraint_id,)
+        )
+        self.conn.commit()
+        return cur.rowcount > 0
 
     # --- write-back audit --------------------------------------------------
 
