@@ -199,3 +199,86 @@ def test_a_malformed_week_is_a_400_not_a_500(client):
 
     assert res.status_code == 400
     assert "YYYY-MM-DD" in res.json()["detail"]
+
+
+# --- goals, constraints and intake ------------------------------------------
+
+
+def test_constraints_ship_with_goals_in_one_round_trip(client):
+    # The home screen shows them together, and `dashboard` set the precedent of
+    # one request per screen.
+    client.post("/api/constraints", json={"weekday": 2, "kind": "no_high_impact", "reason": "knee"})
+    body = client.get("/api/goals").json()
+
+    assert body["constraints"][0]["weekday_name"] == "Wednesday"
+    assert "goals" in body and "running_target" in body
+
+
+def test_a_race_goal_can_be_created_over_the_api(client):
+    created = client.post(
+        "/api/goals",
+        json={"type": "race_time", "subject": "marathon", "target_value": 14400},
+    )
+    assert created.status_code == 200
+    stored = client.get("/api/goals").json()["goals"]
+    assert [g["subject"] for g in stored if g["type"] == "race_time"] == ["marathon"]
+
+
+def test_an_invalid_race_goal_is_a_400_not_a_500(client):
+    # Model validation, so the API rejects exactly what the CLI rejects.
+    response = client.post("/api/goals", json={"type": "race_time", "target_value": 14400})
+    assert response.status_code == 400
+    assert "needs a subject" in response.json()["detail"]
+
+
+def test_an_unknown_constraint_kind_is_a_400(client):
+    response = client.post("/api/constraints", json={"weekday": 2, "kind": "no_burpees"})
+    assert response.status_code == 400
+
+
+def test_a_weekday_outside_the_week_is_refused_before_the_model_layer(client):
+    # Pydantic's ge/le, so the error names the field rather than raising later.
+    assert client.post("/api/constraints", json={"weekday": 9, "kind": "no_lifting"}).status_code == 422
+
+
+def test_a_constraint_can_be_deleted_and_deleting_twice_is_a_404(client):
+    created = client.post("/api/constraints", json={"weekday": 0, "kind": "no_lifting"}).json()
+    assert client.delete(f"/api/constraints/{created['id']}").status_code == 200
+    assert client.delete(f"/api/constraints/{created['id']}").status_code == 404
+
+
+def test_intake_writes_nothing_even_when_it_finds_goals(client, monkeypatch):
+    """The whole contract of the endpoint: it proposes, the user saves.
+
+    A parser that quietly persisted would put the model between the user and
+    their own record, which is the thing write-back exists to prevent.
+    """
+    from fitness_ledger import intake
+
+    async def fake_parse(config, text, today=None):
+        return intake.empty_proposal(
+            goals=[{"type": "consistency", "subject": None, "target_value": 4,
+                    "target_date": None, "status": "active", "id": None, "created_at": None}]
+        )
+
+    monkeypatch.setattr(intake, "parse", fake_parse)
+    body = client.post("/api/intake", json={"text": "train four times a week"}).json()
+
+    assert len(body["goals"]) == 1
+    assert client.get("/api/goals").json()["goals"] == []
+
+
+def test_intake_returns_the_referral_without_calling_a_model(client):
+    # No provider is configured in the test config; a red flag must still work,
+    # which is only true because the check runs before the transport is built.
+    body = client.post(
+        "/api/intake",
+        json={"text": "my achilles feels like it's snapping under the bar"},
+    ).json()
+
+    assert body["safety"] == ["snapping"]
+    assert body["goals"] == []
+
+
+def test_empty_intake_text_is_refused(client):
+    assert client.post("/api/intake", json={"text": ""}).status_code == 422

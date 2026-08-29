@@ -100,9 +100,20 @@ class VolumeTarget:
 # --- what the coach plans toward -------------------------------------------
 
 GOAL_TYPES = frozenset(
-    {"strength_1rm", "running_volume", "running_aei", "consistency"}
+    {"strength_1rm", "running_volume", "running_aei", "consistency", "race_time"}
 )
 GOAL_STATUSES = frozenset({"active", "achieved", "abandoned"})
+
+# Race distances a `race_time` goal can name, in kilometres. A closed set
+# rather than a free number because the pace work that reads these needs a
+# distance it can look up, and "sub-4 marathon" is the shape people state
+# goals in. The values are the real race distances, not rounded.
+RACE_DISTANCES_KM = {
+    "5k": 5.0,
+    "10k": 10.0,
+    "half_marathon": 21.0975,
+    "marathon": 42.195,
+}
 
 # A declared unavailability is a fact the user stated. An inferred one is this
 # app's guess from a planned session with no logged match. The coach must be
@@ -122,8 +133,8 @@ class Goal:
     """
 
     type: str
-    target_value: float
-    subject: str | None = None  # exercise name for strength goals, else None
+    target_value: float  # kg for strength, km for volume, *seconds* for race_time
+    subject: str | None = None  # exercise for strength, race distance for race_time
     target_date: date | None = None
     status: str = "active"
     id: int | None = None  # assigned by storage
@@ -142,6 +153,22 @@ class Goal:
             )
         if self.type == "strength_1rm" and not self.subject:
             raise ValueError("a strength_1rm goal needs a subject (the exercise)")
+        # A race goal without a distance is not a goal: "under four hours" is
+        # meaningless until you say four hours of what, and every pace derived
+        # from it needs the distance to divide by.
+        if self.type == "race_time":
+            if not self.subject:
+                raise ValueError(
+                    "a race_time goal needs a subject (the race distance); "
+                    f"expected one of {sorted(RACE_DISTANCES_KM)}"
+                )
+            if self.subject not in RACE_DISTANCES_KM:
+                raise ValueError(
+                    f"unknown race distance {self.subject!r}; "
+                    f"expected one of {sorted(RACE_DISTANCES_KM)}"
+                )
+            if self.target_value <= 0:
+                raise ValueError("a race_time goal needs a target time in seconds")
 
     @property
     def is_active(self) -> bool:
@@ -209,6 +236,66 @@ class Availability:
             "available": self.available,
             "reason": self.reason,
             "source": self.source,
+        }
+
+
+# What a standing restriction forbids. Typed rather than free text because the
+# planner has to act on it: "no high impact on Wednesdays" must stop a run
+# being placed there while still allowing a lift, and prose cannot be checked.
+CONSTRAINT_KINDS = frozenset({"no_high_impact", "no_lifting", "no_intervals"})
+
+WEEKDAY_NAMES = (
+    "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday",
+)
+
+
+@dataclass(frozen=True)
+class RecurringConstraint:
+    """A standing restriction on one weekday, every week.
+
+    Deliberately *not* :class:`Availability`, which records a specific date the
+    user lost. The two look similar and mean opposite things: a lost Thursday
+    is an exception to correct for once, while "my knee hurts on Wednesdays" is
+    a rule that outlives any particular week. Collapsing them would make a
+    standing medical restriction indistinguishable from a work meeting, and the
+    planner should treat those differently -- one is negotiable and one is not.
+
+    A constraint narrows what a day can hold; it does not remove the day. That
+    is why `kind` exists rather than a boolean: a knee that dislikes running is
+    no reason to skip bench.
+    """
+
+    weekday: int  # 0 = Monday, matching date.weekday()
+    kind: str
+    reason: str | None = None
+    id: int | None = None  # assigned by storage
+
+    def __post_init__(self) -> None:
+        if self.kind not in CONSTRAINT_KINDS:
+            raise ValueError(
+                f"unknown constraint kind {self.kind!r}; "
+                f"expected one of {sorted(CONSTRAINT_KINDS)}"
+            )
+        if not 0 <= self.weekday <= 6:
+            raise ValueError(f"weekday must be 0 (Monday) to 6 (Sunday), got {self.weekday}")
+
+    @property
+    def weekday_name(self) -> str:
+        return WEEKDAY_NAMES[self.weekday]
+
+    def forbids_running(self) -> bool:
+        return self.kind in {"no_high_impact", "no_intervals"}
+
+    def forbids_lifting(self) -> bool:
+        return self.kind == "no_lifting"
+
+    def as_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "weekday": self.weekday,
+            "weekday_name": self.weekday_name,
+            "kind": self.kind,
+            "reason": self.reason,
         }
 
 

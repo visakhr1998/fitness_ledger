@@ -234,9 +234,40 @@ export type Goal = {
   status: string;
 };
 
+/** A standing weekday restriction — not the same thing as a lost day.
+ *
+ * `Availability` records a specific date the user lost. A constraint is a rule
+ * that outlives any one week, and it narrows what a day can hold rather than
+ * removing the day: a knee that dislikes running is no reason to skip bench.
+ */
+export type RecurringConstraint = {
+  id: number;
+  weekday: number;
+  weekday_name: string;
+  kind: "no_high_impact" | "no_lifting" | "no_intervals";
+  reason: string | null;
+};
+
 export type GoalsSection = {
   goals: Goal[];
   running_target: { distance_km_per_week: number; sessions_per_week: number } | null;
+  constraints: RecurringConstraint[];
+};
+
+/** What the intake parser found. Nothing here is saved until the user confirms.
+ *
+ * `safety` is non-null when the text tripped the red-flag check, in which case
+ * no model was called and `message` is the fixed referral. `rejected` holds
+ * anything the model proposed that failed validation — reported rather than
+ * silently dropped, because a vanished goal reads as the app ignoring you.
+ */
+export type IntakeProposal = {
+  goals: Goal[];
+  constraints: Omit<RecurringConstraint, "id">[];
+  unclear: string[];
+  rejected: string[];
+  safety: string[] | null;
+  message: string;
 };
 
 /** Only exceptions are stored — a day with no row is available. */
@@ -342,6 +373,12 @@ export const api = {
     send<{ id: number }>(`/api/goals/${id}`, "PUT", { status }),
   setRunningTarget: (distance_km_per_week: number, sessions_per_week: number) =>
     send<unknown>("/api/running-target", "PUT", { distance_km_per_week, sessions_per_week }),
+  /** Propose goals from a description. Writes nothing — the caller saves. */
+  intake: (text: string) => send<IntakeProposal>("/api/intake", "POST", { text }),
+  addConstraint: (body: Record<string, unknown>) =>
+    send<RecurringConstraint>("/api/constraints", "POST", body),
+  deleteConstraint: (id: number) =>
+    send<{ id: number; deleted: boolean }>(`/api/constraints/${id}`, "DELETE"),
   availability: (week: string) => get<AvailabilitySection>(`/api/availability?week=${week}`),
   markUnavailable: (date: string, reason?: string) =>
     send<unknown>("/api/availability", "PUT", { date, reason: reason || null }),

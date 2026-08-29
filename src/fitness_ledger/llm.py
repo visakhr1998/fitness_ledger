@@ -42,8 +42,20 @@ MAX_TOKENS = 4000
 
 # Gemini reasons by default. This app forbids the model from reasoning about
 # numbers -- it picks a tool and reads the result back -- so thinking is pure
-# cost and pure truncation risk. "none" measurably zeroes it.
-DEFAULT_REASONING_EFFORT = {"gemini": "none"}
+# cost and pure truncation risk, and the default asks for as little as the
+# provider allows.
+#
+# It was "none" until 2026-08-29, which Gemini accepted on 2.5-flash and now
+# rejects on gemini-3.6-flash with `400 INVALID_ARGUMENT: Request contains an
+# invalid argument`. That 400 took down every Gemini request the app made --
+# the chat dock included -- and reads nothing like a rejected parameter, so it
+# is worth knowing it can mean exactly one bad value in the payload. Measured
+# the same day: "none" is the only value the model refuses; minimal, low,
+# medium and high all succeed.
+#
+# `LLM_REASONING_EFFORT=off` still suppresses the parameter entirely, which is
+# the escape hatch if a provider starts rejecting this one too.
+DEFAULT_REASONING_EFFORT = {"gemini": "minimal"}
 
 
 @dataclass(frozen=True)

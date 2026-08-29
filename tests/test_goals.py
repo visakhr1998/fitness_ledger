@@ -13,7 +13,12 @@ from datetime import date
 import pytest
 
 from fitness_ledger.db import SQLiteRepository
-from fitness_ledger.models import Availability, Goal, RunningTarget
+from fitness_ledger.models import (
+    Availability,
+    Goal,
+    RecurringConstraint,
+    RunningTarget,
+)
 
 MONDAY = date(2026, 8, 10)
 
@@ -186,3 +191,78 @@ def test_the_window_is_closed_open_like_every_other_query(repo):
 
     found = repo.get_availability(MONDAY, date(2026, 8, 17))
     assert list(found) == [MONDAY]
+
+
+# --- race goals ------------------------------------------------------------
+#
+# "Sub-4 marathon" is the shape people state running goals in, and until
+# `race_time` existed it had nowhere to live -- running_volume says how far a
+# week, never how fast on one day.
+
+
+def test_a_race_goal_needs_a_distance():
+    # "Under four hours" is meaningless until you say four hours of what, and
+    # every pace derived from it divides by the distance.
+    with pytest.raises(ValueError, match="needs a subject"):
+        Goal(type="race_time", target_value=14400)
+
+
+def test_a_race_distance_outside_the_known_set_is_rejected():
+    with pytest.raises(ValueError, match="unknown race distance"):
+        Goal(type="race_time", subject="ultra", target_value=14400)
+
+
+def test_a_race_goal_needs_a_positive_time():
+    with pytest.raises(ValueError, match="target time in seconds"):
+        Goal(type="race_time", subject="marathon", target_value=0)
+
+
+def test_a_race_goal_round_trips(repo):
+    stored = repo.add_goal(Goal(type="race_time", subject="marathon", target_value=14400))
+    (loaded,) = [g for g in repo.get_goals() if g.type == "race_time"]
+    assert loaded.id == stored.id
+    assert loaded.subject == "marathon"
+    # Seconds, not a clock string: storage keeps the number that arithmetic
+    # needs and formatting happens at the edge.
+    assert loaded.target_value == 14400
+
+
+# --- recurring constraints -------------------------------------------------
+
+
+def test_a_constraint_kind_that_does_not_exist_is_rejected():
+    with pytest.raises(ValueError, match="unknown constraint kind"):
+        RecurringConstraint(weekday=2, kind="no_burpees")
+
+
+def test_a_weekday_outside_the_week_is_rejected():
+    with pytest.raises(ValueError, match="weekday must be"):
+        RecurringConstraint(weekday=7, kind="no_lifting")
+
+
+def test_a_constraint_narrows_a_day_rather_than_removing_it():
+    # A knee that dislikes running is no reason to skip bench. This is the
+    # whole reason `kind` exists instead of a boolean.
+    knee = RecurringConstraint(weekday=2, kind="no_high_impact")
+    assert knee.forbids_running() is True
+    assert knee.forbids_lifting() is False
+
+
+def test_restating_a_constraint_updates_it_rather_than_duplicating(repo):
+    # The intake parser can propose a constraint the user already has. Failing
+    # that would make a correct re-statement look like a fault.
+    first = repo.add_constraint(RecurringConstraint(weekday=2, kind="no_high_impact", reason="knee"))
+    again = repo.add_constraint(
+        RecurringConstraint(weekday=2, kind="no_high_impact", reason="knee, still")
+    )
+    assert again.id == first.id
+    assert [c.reason for c in repo.get_constraints()] == ["knee, still"]
+
+
+def test_a_constraint_can_be_deleted_unlike_a_goal(repo):
+    # An abandoned goal explains why past plans looked as they did. A knee that
+    # stopped hurting is not a fact about last month's training.
+    stored = repo.add_constraint(RecurringConstraint(weekday=0, kind="no_lifting"))
+    assert repo.delete_constraint(stored.id) is True
+    assert repo.get_constraints() == []
+    assert repo.delete_constraint(stored.id) is False

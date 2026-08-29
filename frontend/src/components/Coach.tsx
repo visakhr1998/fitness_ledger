@@ -131,7 +131,7 @@ type Message = { role: "user" | "assistant"; text: string };
 
 /** Collapsed to a floating affordance, as in the reference. Expands into a
  *  side panel scoped to whichever section you are looking at. */
-export function ChatDock({ section }: { section: string }) {
+export function ChatDock({ section, label }: { section: string; label?: string }) {
   const [open, setOpen] = useState(false);
   const [messages, setMessages] = useState<Message[]>([]);
   const [draft, setDraft] = useState("");
@@ -189,7 +189,7 @@ export function ChatDock({ section }: { section: string }) {
       <header style={{ display: "flex", alignItems: "center", gap: 10, padding: "14px 16px", borderBottom: "1px solid var(--grid)" }}>
         <CoachMascot size={28} />
         <div style={{ flex: "1 1 auto" }}>
-          <div style={{ fontSize: 14, fontWeight: 500 }}>Ask about your {section}</div>
+          <div style={{ fontSize: 14, fontWeight: 500 }}>Ask about your {label ?? section}</div>
           <div style={{ fontSize: 11, color: "var(--text-muted)" }}>Reads your cached data</div>
         </div>
         <button onClick={() => setOpen(false)} aria-label="Close assistant" style={{ color: "var(--text-muted)", fontSize: 18 }}>

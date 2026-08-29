@@ -217,8 +217,12 @@ def test_tool_results_are_one_message_each_keyed_by_call_id():
 # reasoning about numbers here, so thinking is pure cost and pure risk.
 
 
-def test_gemini_disables_thinking_by_default():
-    assert llm._effort(config(gemini_api_key="g"), "gemini") == "none"
+def test_gemini_asks_for_the_least_thinking_the_provider_allows():
+    # Was "none" until 2026-08-29. Gemini 3.6 Flash rejects that value with a
+    # 400 that names no parameter, which broke every Gemini request the app
+    # made. This assertion previously pinned the broken value -- the same way
+    # three tests once pinned the gemini-2.5-flash default that returned 404.
+    assert llm._effort(config(gemini_api_key="g"), "gemini") == "minimal"
 
 
 def test_providers_without_a_default_send_nothing():
@@ -235,9 +239,9 @@ def test_off_suppresses_the_parameter_for_providers_that_reject_it():
 
 
 def test_effort_is_sent_only_when_set():
-    with_effort = transport(fake_reply(content="hi"), reasoning_effort="none")
+    with_effort = transport(fake_reply(content="hi"), reasoning_effort="minimal")
     asyncio.run(with_effort.turn())
-    assert with_effort.last_request["reasoning_effort"] == "none"
+    assert with_effort.last_request["reasoning_effort"] == "minimal"
 
     without = transport(fake_reply(content="hi"))
     asyncio.run(without.turn())

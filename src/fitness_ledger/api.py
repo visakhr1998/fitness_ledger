@@ -552,6 +552,10 @@ def get_goals(include_inactive: bool = Query(False)) -> dict[str, Any]:
                 for goal in repository.get_goals(include_inactive=include_inactive)
             ],
             "running_target": target.as_dict() if target else None,
+            # Constraints ship with goals rather than earning a round trip:
+            # the home screen shows them together and `dashboard` set the
+            # precedent of one request per screen.
+            "constraints": [c.as_dict() for c in repository.get_constraints()],
         }
 
 
@@ -594,6 +598,60 @@ def close_goal(goal_id: int, decision: GoalDecision) -> dict[str, Any]:
         if not repository.set_goal_status(goal_id, decision.status):
             raise HTTPException(404, f"no goal {goal_id}")
     return {"id": goal_id, "status": decision.status}
+
+
+class NewConstraint(BaseModel):
+    weekday: int = Field(ge=0, le=6, description="0 Monday to 6 Sunday")
+    kind: str
+    reason: str | None = None
+
+
+@app.post("/api/constraints")
+def add_constraint(request: NewConstraint) -> dict[str, Any]:
+    """A standing weekday restriction. Distinct from availability, which
+    records a specific date that was lost."""
+    from .models import RecurringConstraint
+
+    try:
+        constraint = RecurringConstraint(
+            weekday=request.weekday, kind=request.kind, reason=request.reason
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+    with repo() as repository:
+        stored = repository.add_constraint(constraint)
+    return stored.as_dict()
+
+
+@app.delete("/api/constraints/{constraint_id}")
+def delete_constraint(constraint_id: int) -> dict[str, Any]:
+    with repo() as repository:
+        if not repository.delete_constraint(constraint_id):
+            raise HTTPException(404, f"no constraint {constraint_id}")
+    return {"id": constraint_id, "deleted": True}
+
+
+class IntakeRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=4000)
+
+
+@app.post("/api/intake")
+async def parse_intake(request: IntakeRequest) -> dict[str, Any]:
+    """Turn a description of someone's goals into a *proposal*.
+
+    Writes nothing. The UI confirms what comes back and then posts to
+    /api/goals, /api/constraints and /api/running-target, so the model never
+    stands between the user and their own record.
+    """
+    from .intake import parse
+
+    try:
+        return await parse(_config, request.text)
+    except RuntimeError as exc:
+        # llm.ProviderError: nothing configured, or configured wrong. The panel
+        # shows this text, so it has to say what to do about it.
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 class NewRunningTarget(BaseModel):

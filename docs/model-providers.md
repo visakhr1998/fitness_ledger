@@ -23,9 +23,10 @@ Three things worth knowing:
 - **The model must support tool calling.** The whole loop is tool calls, so one
   without it fails outright rather than giving worse answers. Ollama's `gemma3`
   has no tool support — use `qwen3` locally.
-- **Gemini's thinking mode is off by default** (`LLM_REASONING_EFFORT=none`).
-  Thinking tokens count against the output limit without appearing in the reply,
-  which truncates answers mid-sentence.
+- **Gemini is asked to think as little as possible** (`LLM_REASONING_EFFORT`
+  defaults to `minimal`). Thinking tokens count against the output limit without
+  appearing in the reply, which truncates answers mid-sentence. Set `off` to
+  leave the setting out of the request entirely, for a provider that rejects it.
 - **Free tiers usually cost you data instead.** Outside the EEA, UK and
   Switzerland, Google may use free-tier prompts to improve their products,
   including human review. The chat box sends your questions along with your
