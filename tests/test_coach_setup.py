@@ -110,11 +110,25 @@ def test_an_openai_compatible_provider_becomes_a_litellm_model():
 
 
 def test_gemini_is_still_a_plain_model_id():
-    """The default path must not start depending on LiteLLM."""
+    """The Gemini path must not start depending on LiteLLM.
+
+    The provider is stated rather than read from `Config.load()`. This
+    previously took whatever the developer's own `.env` said, so pointing the
+    machine at DeepSeek turned a passing suite red without a line of source
+    changing -- a test that measures the room, not the code.
+    """
+    from dataclasses import replace
+
     from fitness_ledger.coach import configure_adk_environment
     from fitness_ledger.config import Config
 
-    assert isinstance(configure_adk_environment(Config.load()), str)
+    gemini = replace(
+        Config.load(),
+        llm_provider="gemini",
+        gemini_api_key="not-a-real-key",
+        llm_model=None,
+    )
+    assert isinstance(configure_adk_environment(gemini), str)
 
 
 def test_an_openai_compatible_provider_without_a_url_says_so():

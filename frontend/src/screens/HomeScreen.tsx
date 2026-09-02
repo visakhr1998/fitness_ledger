@@ -15,7 +15,7 @@
  * not a window over past training.
  */
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   api,
   type GoalsSection,
@@ -36,25 +36,63 @@ const chipStyle = {
   fontSize: 13,
 } as const;
 
+/** A fetch that never reached the server throws a bare TypeError whose message
+ *  is "Failed to fetch" — true, and useless. The overwhelmingly likely cause is
+ *  that the backend is not running, so say that instead. */
+function readable(exc: unknown): string {
+  if (exc instanceof DOMException && exc.name === "AbortError") return "";
+  if (exc instanceof TypeError) {
+    return "Could not reach the server. Is it running? (ledger serve)";
+  }
+  return exc instanceof Error ? exc.message : String(exc);
+}
+
 /** The messy-input box and whatever it produced. */
 function Intake({ onSaved }: { onSaved: () => void }) {
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [proposal, setProposal] = useState<IntakeProposal | null>(null);
+  // Seconds spent waiting. The model takes roughly 8-20s and occasionally far
+  // longer, which behind a static "Reading…" is indistinguishable from a hang —
+  // that is exactly how a stopped server was first reported as a bug.
+  const [elapsed, setElapsed] = useState(0);
+  const pending = useRef<AbortController | null>(null);
+
+  useEffect(() => {
+    if (!busy) return;
+    const started = Date.now();
+    setElapsed(0);
+    const timer = window.setInterval(
+      () => setElapsed(Math.floor((Date.now() - started) / 1000)),
+      1000,
+    );
+    return () => window.clearInterval(timer);
+  }, [busy]);
+
+  // Abort in flight if the screen goes away, so a slow reply cannot land on an
+  // unmounted component.
+  useEffect(() => () => pending.current?.abort(), []);
 
   const parse = async () => {
+    const controller = new AbortController();
+    pending.current = controller;
     setBusy(true);
     setError(null);
     setProposal(null);
     try {
-      setProposal(await api.intake(text));
+      setProposal(await api.intake(text, controller.signal));
     } catch (exc) {
-      setError(exc instanceof Error ? exc.message : String(exc));
+      // An abort is the user's own doing, so it is not an error to report.
+      const message = readable(exc);
+      if (message) setError(message);
     } finally {
+      pending.current = null;
       setBusy(false);
     }
   };
+
+  const cancel = () => pending.current?.abort();
 
   const save = async () => {
     if (!proposal) return;
@@ -76,7 +114,7 @@ function Intake({ onSaved }: { onSaved: () => void }) {
       setText("");
       onSaved();
     } catch (exc) {
-      setError(exc instanceof Error ? exc.message : String(exc));
+      setError(readable(exc));
     } finally {
       setBusy(false);
     }
@@ -125,10 +163,28 @@ function Intake({ onSaved }: { onSaved: () => void }) {
             opacity: busy || !text.trim() ? 0.5 : 1,
           }}
         >
-          {busy ? "Reading…" : "Read this"}
+          {busy ? `Reading… ${elapsed}s` : "Read this"}
         </button>
+        {busy ? (
+          <button
+            onClick={cancel}
+            style={{
+              padding: "9px 14px",
+              borderRadius: "var(--radius-control)",
+              border: "1px solid var(--border)",
+              background: "transparent",
+              color: "var(--text-secondary)",
+              fontSize: 13,
+              cursor: "pointer",
+            }}
+          >
+            Cancel
+          </button>
+        ) : null}
         <span style={{ color: "var(--text-muted)", fontSize: 12 }}>
-          Nothing is saved until you confirm.
+          {busy && elapsed >= 8
+            ? "The model is thinking. This usually takes 8-20 seconds."
+            : "Nothing is saved until you confirm."}
         </span>
       </div>
 

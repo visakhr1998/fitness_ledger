@@ -305,11 +305,19 @@ async function get<T>(path: string): Promise<T> {
 
 /** Anything that changes state. Same error unwrapping as `get`: FastAPI puts
  *  the useful part in `detail`, and "500" tells nobody anything. */
-async function send<T>(path: string, method: string, body?: unknown): Promise<T> {
+async function send<T>(
+  path: string,
+  method: string,
+  body?: unknown,
+  signal?: AbortSignal,
+): Promise<T> {
   const response = await fetch(path, {
     method,
     headers: body === undefined ? undefined : { "content-type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),
+    // Only the intake call passes one: it is the only request slow enough that
+    // a person may want to stop waiting for it.
+    signal,
   });
   let parsed: unknown = null;
   try {
@@ -373,8 +381,13 @@ export const api = {
     send<{ id: number }>(`/api/goals/${id}`, "PUT", { status }),
   setRunningTarget: (distance_km_per_week: number, sessions_per_week: number) =>
     send<unknown>("/api/running-target", "PUT", { distance_km_per_week, sessions_per_week }),
-  /** Propose goals from a description. Writes nothing — the caller saves. */
-  intake: (text: string) => send<IntakeProposal>("/api/intake", "POST", { text }),
+  /** Propose goals from a description. Writes nothing — the caller saves.
+   *
+   *  Takes a signal because this is the one slow call in the app: the model's
+   *  response time varies from about 8 to 20 seconds and the user should be
+   *  able to give up on it. */
+  intake: (text: string, signal?: AbortSignal) =>
+    send<IntakeProposal>("/api/intake", "POST", { text }, signal),
   addConstraint: (body: Record<string, unknown>) =>
     send<RecurringConstraint>("/api/constraints", "POST", body),
   deleteConstraint: (id: number) =>
