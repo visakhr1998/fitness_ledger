@@ -113,3 +113,69 @@ class _Passthrough:
 
     def __exit__(self, *exc):
         return False
+
+
+# --- the exercise catalogue -------------------------------------------------
+# Hevy names this field `equipment`; this repo calls it `equipment_category`.
+# Reading only our own name stored NULL for all 461 templates, so
+# `progression.increment_for` fell back to 2.5 kg for every exercise -- and
+# nothing tested it, which is how it survived from v0.1.
+
+
+class CatalogueClient:
+    """Returns one page of templates in Hevy's real payload shape."""
+
+    def __init__(self, items):
+        self.items = items
+
+    async def call(self, tool, arguments=None):
+        assert tool == "hevy_list_exercise_templates"
+        return {"items": self.items, "has_more": False}
+
+
+def test_equipment_is_read_from_the_field_hevy_actually_sends(tmp_path):
+    from fitness_ledger.sync import sync_exercise_templates
+
+    # Verbatim shape from a live hevy_list_exercise_templates response.
+    client = CatalogueClient([
+        {
+            "id": "79D0BB3A",
+            "title": "Bench Press (Barbell)",
+            "type": "weight_reps",
+            "primary_muscle_group": "chest",
+            "secondary_muscle_groups": ["triceps", "shoulders"],
+            "equipment": "barbell",
+            "is_custom": False,
+        },
+        {
+            "id": "29083183",
+            "title": "Chin Up",
+            "type": "reps_only",
+            "primary_muscle_group": "lats",
+            "secondary_muscle_groups": [],
+            "equipment": "none",
+            "is_custom": False,
+        },
+    ])
+
+    with SQLiteRepository(tmp_path / "catalogue.db", 120) as repo:
+        assert asyncio.run(sync_exercise_templates(client, repo)) == 2
+        stored = {t.id: t.equipment_category for t in repo.get_templates().values()}
+
+    assert stored["79D0BB3A"] == "barbell"
+    # The row that matters: "none" must survive as itself, because it is what
+    # makes a bodyweight increment 0.0 rather than the 2.5 kg default.
+    assert stored["29083183"] == "none"
+
+
+def test_the_older_field_name_is_still_accepted(tmp_path):
+    # The payload has carried each name at different times; reading only one is
+    # what caused the bug in the first place.
+    from fitness_ledger.sync import sync_exercise_templates
+
+    client = CatalogueClient([
+        {"id": "X", "title": "Thing", "equipment_category": "machine"},
+    ])
+    with SQLiteRepository(tmp_path / "legacy.db", 120) as repo:
+        asyncio.run(sync_exercise_templates(client, repo))
+        assert repo.get_templates()["X"].equipment_category == "machine"
