@@ -86,6 +86,18 @@ class Config:
     # This app forbids the model from reasoning about numbers, so the default is
     # to switch it off where the provider supports it. "off" sends no parameter.
     llm_reasoning_effort: str | None = None
+    # How long to wait for one model reply before giving up on it.
+    #
+    # Measured against gemini-3.6-flash on 2026-09-02: the *same* request five
+    # times took 2.9s, 15.0s, 26.5s, 103.7s and 6.4s. The variance is the
+    # provider's, not ours, and `reasoning_effort` caps the hint rather than the
+    # clock. Without a timeout the SDK waits 600 seconds, which behind a spinner
+    # is indistinguishable from a hang.
+    #
+    # Paired with one retry: a slow draw is usually followed by a fast one, so
+    # cutting it short and asking again beats waiting out the tail.
+    llm_timeout_seconds: float = 30.0
+    llm_max_retries: int = 1
 
     # A second provider for the coach only, used when the first refuses.
     # Planning is the one place a quota error is fatal rather than annoying:
@@ -133,6 +145,8 @@ class Config:
             coach_fallback_model=os.environ.get("COACH_FALLBACK_MODEL") or None,
             coach_fallback_api_key=os.environ.get("COACH_FALLBACK_API_KEY") or None,
             llm_reasoning_effort=os.environ.get("LLM_REASONING_EFFORT") or None,
+            llm_timeout_seconds=float(os.environ.get("LLM_TIMEOUT_SECONDS", "30")),
+            llm_max_retries=int(os.environ.get("LLM_MAX_RETRIES", "1")),
         )
 
 

@@ -27,6 +27,11 @@ Three things worth knowing:
   defaults to `minimal`). Thinking tokens count against the output limit without
   appearing in the reply, which truncates answers mid-sentence. Set `off` to
   leave the setting out of the request entirely, for a provider that rejects it.
+- **Response times vary far more than you would expect.** The same request to
+  `gemini-3.6-flash`, five times in a row, took 2.9s, 15.0s, 26.5s, 103.7s and
+  6.4s. `LLM_TIMEOUT_SECONDS` (default 30) caps the wait and `LLM_MAX_RETRIES`
+  (default 1) asks again, because a slow draw is usually followed by a fast one.
+  Set the timeout to `0` for a local model that is legitimately slow.
 - **Free tiers usually cost you data instead.** Outside the EEA, UK and
   Switzerland, Google may use free-tier prompts to improve their products,
   including human review. The chat box sends your questions along with your

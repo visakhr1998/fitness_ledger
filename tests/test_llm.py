@@ -283,3 +283,58 @@ def test_malformed_tool_arguments_degrade_to_empty():
     assert llm._loads("") == {}
     assert llm._loads(None) == {}
     assert llm._loads('["a list"]') == {}
+
+
+# --- bounding a slow provider ----------------------------------------------
+# Measured against gemini-3.6-flash on 2026-09-02: the same request five times
+# took 2.9s, 15.0s, 26.5s, 103.7s and 6.4s. The SDK's own defaults are a 600
+# second timeout and two silent retries, so the worst case behind a spinner is
+# indistinguishable from a hang.
+
+
+def test_a_timeout_and_retry_budget_are_set_by_default():
+    limits = llm._limits(config())
+    assert limits["timeout"] == 30.0
+    assert limits["max_retries"] == 1
+
+
+def test_a_zero_timeout_means_use_the_sdk_default():
+    # The escape hatch for a deliberately slow local model: Ollama on CPU can
+    # legitimately take minutes, and cutting it off is not a kindness.
+    assert "timeout" not in llm._limits(config(llm_timeout_seconds=0))
+
+
+def test_a_negative_retry_budget_is_clamped_rather_than_passed_through():
+    assert llm._limits(config(llm_max_retries=-3))["max_retries"] == 0
+
+
+def test_a_timeout_is_explained_rather_than_raised_raw():
+    class APITimeoutError(Exception):
+        pass
+
+    message = llm.describe_provider_failure(APITimeoutError("Request timed out."))
+    assert message and "did not answer in time" in message
+    # It has to say what to change, not just what went wrong.
+    assert "LLM_TIMEOUT_SECONDS" in message
+
+
+def test_a_quota_refusal_is_explained():
+    class RateLimitError(Exception):
+        pass
+
+    message = llm.describe_provider_failure(RateLimitError("Error code: 429 - quota"))
+    assert message and "quota exhausted" in message
+
+
+def test_an_unrecognised_failure_is_left_alone():
+    # Dressing up an unknown fault as a friendly message loses the traceback
+    # that would have explained it.
+    assert llm.describe_provider_failure(ValueError("something else entirely")) is None
+
+
+def test_provider_unavailable_is_still_a_runtime_error():
+    # api.py catches RuntimeError to turn provider problems into a 503. An
+    # exception outside that hierarchy surfaces as an opaque 500 instead --
+    # which is exactly what a real 429 did before this was added.
+    assert issubclass(llm.ProviderUnavailable, llm.ProviderError)
+    assert issubclass(llm.ProviderUnavailable, RuntimeError)

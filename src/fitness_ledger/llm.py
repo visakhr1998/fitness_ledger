@@ -82,6 +82,45 @@ class ProviderError(RuntimeError):
     """Configuration is missing or contradictory. Surfaced to the user as 503."""
 
 
+class ProviderUnavailable(ProviderError):
+    """The provider was reachable but would not answer this time.
+
+    A timeout or a quota refusal, as opposed to a misconfiguration. Separate
+    because the two need different words: one says try again, the other says
+    change a setting. Both are `ProviderError` so existing handlers that catch
+    `RuntimeError` keep working.
+    """
+
+
+def describe_provider_failure(exc: BaseException) -> str | None:
+    """Turn a transport exception into something worth showing a user.
+
+    Returns None when the failure is not one of the two we can explain, so the
+    caller re-raises rather than dressing up an unknown fault.
+
+    Matched on class name and message rather than by importing the SDK's
+    exception types: two SDKs are in play, the openai one is optional at import
+    time in some install shapes, and the strings are what every provider agrees
+    on.
+    """
+    name = type(exc).__name__
+    text = str(exc)
+
+    if "Timeout" in name or "timed out" in text.lower():
+        return (
+            "The model did not answer in time. This provider's response time "
+            "varies a lot, so trying again often works. Raise "
+            "LLM_TIMEOUT_SECONDS in .env if it keeps happening."
+        )
+    if "RateLimit" in name or "429" in text or "quota" in text.lower():
+        return (
+            "The model provider refused the request: quota exhausted. Free "
+            "tiers reset on their own schedule -- wait, or point LLM_PROVIDER "
+            "at a different provider in .env."
+        )
+    return None
+
+
 def to_openai_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Anthropic tool schema -> OpenAI function schema.
 
@@ -132,26 +171,50 @@ class Transport(ABC):
 
 
 class AnthropicTransport(Transport):
-    def __init__(self, model, system, tools, *, api_key: str | None):
+    def __init__(
+        self,
+        model,
+        system,
+        tools,
+        *,
+        api_key: str | None,
+        timeout: float | None = None,
+        max_retries: int = 1,
+    ):
         super().__init__(model, system, tools)
         from anthropic import AsyncAnthropic
 
+        # Same bounding as the OpenAI path, so a slow provider behaves the same
+        # way whichever transport is configured.
+        options: dict[str, Any] = {"max_retries": max_retries}
+        if timeout is not None:
+            options["timeout"] = timeout
         # A None key is fine: the SDK then resolves ANTHROPIC_AUTH_TOKEN or an
         # `ant auth login` profile, so an OAuth profile works with no key set.
-        self._client = AsyncAnthropic(api_key=api_key) if api_key else AsyncAnthropic()
+        self._client = (
+            AsyncAnthropic(api_key=api_key, **options)
+            if api_key
+            else AsyncAnthropic(**options)
+        )
         self._messages: list[dict[str, Any]] = []
 
     def ask(self, question: str) -> None:
         self._messages.append({"role": "user", "content": question})
 
     async def turn(self) -> Turn:
-        response = await self._client.messages.create(
-            model=self.model,
-            max_tokens=MAX_TOKENS,
-            system=self.system,
-            tools=self.tools,
-            messages=self._messages,
-        )
+        try:
+            response = await self._client.messages.create(
+                model=self.model,
+                max_tokens=MAX_TOKENS,
+                system=self.system,
+                tools=self.tools,
+                messages=self._messages,
+            )
+        except Exception as exc:  # noqa: BLE001 - re-raised unless explainable
+            explanation = describe_provider_failure(exc)
+            if explanation is None:
+                raise
+            raise ProviderUnavailable(explanation) from exc
         self._messages.append({"role": "assistant", "content": response.content})
 
         text = "".join(
@@ -196,6 +259,8 @@ class OpenAICompatibleTransport(Transport):
         api_key: str,
         base_url: str,
         reasoning_effort: str | None = None,
+        timeout: float | None = None,
+        max_retries: int = 1,
     ):
         super().__init__(model, system, tools)
         self.reasoning_effort = reasoning_effort
@@ -207,7 +272,13 @@ class OpenAICompatibleTransport(Transport):
                 "protocol client). Install it with: pip install -e ."
             ) from exc
 
-        self._client = AsyncOpenAI(api_key=api_key, base_url=base_url)
+        # The SDK's own defaults are 600 seconds and two retries, which behind
+        # a spinner is indistinguishable from a hang -- and the retries are
+        # silent, so a slow provider looks like one very long request.
+        client_options: dict[str, Any] = {"max_retries": max_retries}
+        if timeout is not None:
+            client_options["timeout"] = timeout
+        self._client = AsyncOpenAI(api_key=api_key, base_url=base_url, **client_options)
         self._tools = to_openai_tools(tools)
         self._messages: list[dict[str, Any]] = [{"role": "system", "content": system}]
 
@@ -220,13 +291,21 @@ class OpenAICompatibleTransport(Transport):
             # Omitted unless configured: providers that don't reason reject it.
             extra["reasoning_effort"] = self.reasoning_effort
 
-        response = await self._client.chat.completions.create(
-            model=self.model,
-            max_tokens=MAX_TOKENS,
-            messages=self._messages,
-            tools=self._tools,
-            **extra,
-        )
+        try:
+            response = await self._client.chat.completions.create(
+                model=self.model,
+                max_tokens=MAX_TOKENS,
+                messages=self._messages,
+                tools=self._tools,
+                **extra,
+            )
+        except Exception as exc:  # noqa: BLE001 - re-raised unless explainable
+            # A timeout and a quota refusal are the two failures a user can act
+            # on. Everything else keeps its own traceback.
+            explanation = describe_provider_failure(exc)
+            if explanation is None:
+                raise
+            raise ProviderUnavailable(explanation) from exc
         choice = response.choices[0]
         message = choice.message
         # Echo the assistant turn back verbatim; a hand-rebuilt message loses the
@@ -289,6 +368,20 @@ def _effort(config: Config, provider: str) -> str | None:
     return setting or DEFAULT_REASONING_EFFORT.get(provider)
 
 
+def _limits(config: Config) -> dict[str, Any]:
+    """How long to wait, and how many times to ask again.
+
+    Kept here rather than at each call site so both transports and all four
+    providers are bounded the same way. A timeout of 0 or less means "use the
+    SDK default", which is the escape hatch for a deliberately slow local
+    model -- Ollama on CPU can legitimately take minutes.
+    """
+    limits: dict[str, Any] = {"max_retries": max(config.llm_max_retries, 0)}
+    if config.llm_timeout_seconds > 0:
+        limits["timeout"] = config.llm_timeout_seconds
+    return limits
+
+
 def model_name(config: Config) -> str:
     """The model string the resolved provider will send. `LLM_MODEL` overrides
     every provider so a swap needs one variable, not one per vendor."""
@@ -309,7 +402,7 @@ def build(config: Config, system: str, tools: list[dict[str, Any]]) -> Transport
 
     if provider == "anthropic":
         return AnthropicTransport(
-            model, system, tools, api_key=config.anthropic_api_key
+            model, system, tools, api_key=config.anthropic_api_key, **_limits(config)
         )
 
     if provider == "gemini":
@@ -325,6 +418,7 @@ def build(config: Config, system: str, tools: list[dict[str, Any]]) -> Transport
             api_key=config.gemini_api_key,
             base_url=config.llm_base_url or GEMINI_BASE_URL,
             reasoning_effort=_effort(config, provider),
+            **_limits(config),
         )
 
     if provider == "ollama":
@@ -336,6 +430,7 @@ def build(config: Config, system: str, tools: list[dict[str, Any]]) -> Transport
             api_key=config.llm_api_key or "ollama",
             base_url=config.llm_base_url or OLLAMA_BASE_URL,
             reasoning_effort=_effort(config, provider),
+            **_limits(config),
         )
 
     if provider == "openai-compatible":
@@ -350,6 +445,7 @@ def build(config: Config, system: str, tools: list[dict[str, Any]]) -> Transport
             api_key=config.llm_api_key or "unused",
             base_url=config.llm_base_url,
             reasoning_effort=_effort(config, provider),
+            **_limits(config),
         )
 
     if provider == "none":
