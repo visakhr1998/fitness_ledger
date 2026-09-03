@@ -62,7 +62,13 @@ async def sync_exercise_templates(hevy: MCPClient, repo: SQLiteRepository) -> in
                 type=item.get("type", ""),
                 primary_muscle_group=item.get("primary_muscle_group") or "",
                 secondary_muscle_groups=tuple(item.get("secondary_muscle_groups") or []),
-                equipment_category=item.get("equipment_category"),
+                # Hevy calls this `equipment`; we call it `equipment_category`.
+                # Reading only our own name meant every row stored NULL, and
+                # `progression.increment_for` fell back to 2.5 kg for
+                # everything -- suggesting 2.5 kg be added to a Pull Up, where
+                # the table says 0.0. Both names are read because the payload
+                # has carried each at different times.
+                equipment_category=item.get("equipment") or item.get("equipment_category"),
                 is_custom=bool(item.get("is_custom")),
             )
             for item in items

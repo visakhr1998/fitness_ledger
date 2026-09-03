@@ -8,6 +8,7 @@ OAuth refresh -- so this repo never stores a secret.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import sys
@@ -20,6 +21,37 @@ from mcp.client.stdio import stdio_client
 
 class MCPError(RuntimeError):
     pass
+
+
+class MCPRateLimited(MCPError):
+    """The server refused because we asked too often.
+
+    The one failure worth asking again about, and separated for exactly that
+    reason: `call` retries this and re-raises everything else immediately.
+    """
+
+
+# Three attempts over roughly 2s + 4s of waiting. Hevy's limits are per-minute,
+# so this is not enough to outlast a genuinely exhausted budget -- it is enough
+# to survive the burst that a fifty-call sync creates on its own.
+RATE_LIMIT_ATTEMPTS = 3
+RATE_LIMIT_BACKOFF_SECONDS = 2.0
+
+# Matched on the message because neither server sets a status code we can read:
+# Hevy reports a limit as plain text through `isError`, which is why the
+# plain-text guard below exists at all.
+RATE_LIMIT_MARKERS = ("rate limit", "rate-limit", "429", "too many requests")
+
+
+def _failure(tool: str, text: str) -> MCPError:
+    """The right exception for a failure the server reported."""
+    lowered = text.lower()
+    kind = (
+        MCPRateLimited
+        if any(marker in lowered for marker in RATE_LIMIT_MARKERS)
+        else MCPError
+    )
+    return kind(f"{tool} failed: {text}")
 
 
 class MCPTruncatedError(MCPError):
@@ -85,21 +117,46 @@ class MCPClient:
         return [tool.name for tool in result.tools]
 
     async def call(self, tool: str, arguments: dict[str, Any] | None = None) -> Any:
-        """Call a tool and return its parsed JSON payload."""
+        """Call a tool and return its parsed JSON payload.
+
+        Retries a rate limit and nothing else. A full sync is roughly fifty
+        calls -- Hevy paginates workouts at ten and templates at a hundred over
+        five pages -- so one refusal used to abort a whole step and leave the
+        cache half-populated. That is the shape of issue #16, where `ledger
+        sync` ran three of five steps and reported success.
+
+        Only the rate limit is retried. Every other failure is a real fault,
+        and asking again would turn a bad request into a slow bad request.
+        """
         if self._session is None:
             raise MCPError("client is not connected")
+
+        for attempt in range(RATE_LIMIT_ATTEMPTS):
+            try:
+                return await self._attempt(tool, arguments)
+            except MCPRateLimited:
+                if attempt == RATE_LIMIT_ATTEMPTS - 1:
+                    raise
+                # Exponential, from a deliberately unhurried base: these limits
+                # are per-minute, so retrying in milliseconds only spends the
+                # remaining budget faster.
+                await asyncio.sleep(RATE_LIMIT_BACKOFF_SECONDS * (2**attempt))
+        raise MCPError(f"{tool} failed: retries exhausted")  # pragma: no cover
+
+    async def _attempt(self, tool: str, arguments: dict[str, Any] | None) -> Any:
+        assert self._session is not None
         result = await self._session.call_tool(tool, arguments or {})
 
         text = "".join(
             block.text for block in result.content if getattr(block, "type", "") == "text"
         )
         if getattr(result, "isError", False):
-            raise MCPError(f"{tool} failed: {text[:400]}")
+            raise _failure(tool, text[:400])
         # Both servers report some failures as ordinary text rather than setting
         # isError. Left unchecked those parse as "no data", which is how a broken
         # request turns into a silently empty week.
         if text.lstrip().startswith("Error:"):
-            raise MCPError(f"{tool} failed: {text.strip()[:400]}")
+            raise _failure(tool, text.strip()[:400])
         return _parse(text)
 
 

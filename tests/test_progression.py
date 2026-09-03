@@ -152,3 +152,18 @@ def test_main_lifts_respects_limit():
         for day in (DAY1, DAY2, DAY3):
             sets += sets_on(day, 50, [8], tid=f"EX{index}")
     assert len(main_lifts(sets, limit=3)) == 3
+
+
+# --- load increments per equipment ------------------------------------------
+# increment_for was always tested and always correct. What was untested was the
+# *seam*: sync stored equipment_category as NULL for all 461 templates, so this
+# function was only ever reached with None. Both halves right, the join between
+# them wrong -- see test_sync_entry_points for the other side.
+
+
+def test_bodyweight_and_band_work_add_no_load():
+    # The failure this fix exists for: with equipment_category NULL, the app
+    # suggested adding 2.5 kg to a Pull Up.
+    assert increment_for("none") == 0.0
+    assert increment_for("resistance_band") == 0.0
+    assert increment_for("suspension") == 0.0
