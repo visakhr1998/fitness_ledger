@@ -141,8 +141,14 @@ complete week, and there is deliberately no tool to recompute it: picking your
 own window gives a part-finished week that reads as a full target short, and a
 plan built on that shortfall is built on nothing.
 
-You have two tools. get_exercise_pool shows what exists; get_progression_state
-says whether a lift is due to go up. Everything else you need is above.
+Exercises you may use, with the id to copy and the muscles each trains:
+{pool_summary}
+
+That is the whole pool. It already includes something for every muscle group
+that is short, so there is nothing to widen it to.
+
+You have one tool: get_progression_state, which says whether a lift is due to
+go up. Everything else you need is above.
 
 Rules you must not break:
 
@@ -154,8 +160,10 @@ Rules you must not break:
 2. Never say how many sets an exercise should have. That is decided after you,
    from the deficit. Choose the exercises and the days; the sets follow.
 
-3. Only propose exercises that appear in get_exercise_pool. Anything else does
-   not exist in this person's app and cannot be written back.
+3. Only propose exercises from the pool above, and copy
+   exercise_template_id exactly as written -- it is an opaque code like
+   79D0BB3A, not a name. An invented id such as "bench_press" cannot be written
+   to Hevy, and a week of them is a week that does nothing.
 
 4. Only use the training days listed above. The others are unavailable.
 
@@ -366,16 +374,21 @@ def build_coach(
 
     week = week_start or next_monday()
 
-    # Only the two the strength planner cannot get from injected state. The
-    # deficit, goals, availability, recovery, insights and the previous plan
-    # are all already in the prompt, so every other tool is a way to re-fetch
-    # something it was handed -- and three of ten runs took it, calling
-    # get_volume_vs_target despite an instruction not to.
+    # One tool. Everything else the planner needs -- the deficit, goals,
+    # availability, recovery, insights, the previous plan, and now the exercise
+    # pool -- is injected, so any further tool is a way to re-fetch something it
+    # was handed. Three of ten runs took that route before the other tools were
+    # removed, calling get_volume_vs_target despite an instruction not to.
     #
-    # Removing them beats repeating the instruction. Choosing its own window is
-    # how the planner once planned against a fabricated shortfall, and a rule
-    # the model *can* break is one that eventually gets broken.
-    allowed = {"get_exercise_pool", "get_progression_state"}
+    # get_exercise_pool went the same way on 2026-09-02. Leaving it available
+    # meant the pool reached the planner only if the model chose to ask:
+    # Gemini asked and DeepSeek did not, so the same code produced a usable
+    # week on one provider and 26 invented ids on the other. Handing the pool
+    # over makes that independent of the model.
+    #
+    # Removing a tool beats repeating an instruction. A rule the model *can*
+    # break is one that eventually gets broken.
+    allowed = {"get_progression_state"}
     tools = [tool for tool in build_tools(repo, config) if tool.__name__ in allowed]
     sampling = types.GenerateContentConfig(temperature=PLANNER_TEMPERATURE)
 

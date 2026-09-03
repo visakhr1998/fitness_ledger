@@ -46,10 +46,20 @@ ENABLE_VAR = "RUN_COACH_EVALS"
 # Do not tune an assertion until it passes; that turns the suite into a
 # thermometer that only reads room temperature.
 
-# The strength planner is given the pool and the deficit; one call for the pool
-# is the expected shape, and the running planner has no tools at all. Anything
-# above this means the context injection has stopped working.
-MAX_TOOL_CALLS = 2
+# Re-derived from the tool set on 2026-09-02, as the parked finding said to.
+#
+# The threshold was 2, set on day 8 when the planner still held every tool and
+# more than two calls genuinely meant refetching injected context. After
+# `abf39e8` only two tools remained, and the correct trace for `back_neglected`
+# was *three* calls -- so the score was unsatisfiable and read 0/3 on both
+# providers. Raising it would have been the wrong fix; the reason it needed
+# three was that the exercise pool was not in the prompt.
+#
+# The pool is injected now and `get_exercise_pool` is gone. The strength
+# planner holds one tool, get_progression_state, and the running planner holds
+# none. A correct run makes at most one call, and zero is equally correct --
+# the pool and the deficit are both handed over.
+MAX_TOOL_CALLS = 1
 
 # Tools a correct run never touches. get_volume_vs_target is the sharp one: left
 # to itself the agent called it with `this-week`, a barely-started week where
