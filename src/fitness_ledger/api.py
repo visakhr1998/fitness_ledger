@@ -556,6 +556,14 @@ def get_goals(include_inactive: bool = Query(False)) -> dict[str, Any]:
             # the home screen shows them together and `dashboard` set the
             # precedent of one request per screen.
             "constraints": [c.as_dict() for c in repository.get_constraints()],
+            # Computed here rather than fetched per card: there are only ever a
+            # handful of goals, and `dashboard` set the precedent of one request
+            # per screen.
+            "progress": {
+                str(goal.id): queries.goal_progress(repository, _config, goal)
+                for goal in repository.get_goals(include_inactive=include_inactive)
+                if goal.id is not None
+            },
         }
 
 
@@ -598,6 +606,76 @@ def close_goal(goal_id: int, decision: GoalDecision) -> dict[str, Any]:
         if not repository.set_goal_status(goal_id, decision.status):
             raise HTTPException(404, f"no goal {goal_id}")
     return {"id": goal_id, "status": decision.status}
+
+
+@app.patch("/api/goals/{goal_id}")
+def revise_goal(goal_id: int, request: NewGoal) -> dict[str, Any]:
+    """Edit a goal by superseding it, never by overwriting.
+
+    PUT on this path closes a goal (achieved/abandoned); PATCH replaces it. The
+    old row survives as `abandoned` with the new one pointing back at it,
+    because the coach reads active goals when it writes a rationale and
+    rewriting one in place would change the recorded reason a past week looked
+    as it did.
+    """
+    from .models import Goal
+
+    try:
+        revision = Goal(
+            type=request.type,
+            target_value=request.target_value,
+            subject=request.subject,
+            target_date=date.fromisoformat(request.target_date) if request.target_date else None,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+    with repo() as repository:
+        stored = repository.revise_goal(goal_id, revision)
+        if stored is None:
+            raise HTTPException(404, f"no goal {goal_id}")
+    return stored.as_dict()
+
+
+@app.get("/api/goals/{goal_id}/progress")
+def get_goal_progress(goal_id: int) -> dict[str, Any]:
+    """How close a goal is, plus the question to hand the chat dock.
+
+    The question carries the numbers, so the model explains a figure it was
+    given rather than deriving one -- the same division `chat.py` enforces.
+    """
+    with repo() as repository:
+        matches = [g for g in repository.get_goals(include_inactive=True) if g.id == goal_id]
+        if not matches:
+            raise HTTPException(404, f"no goal {goal_id}")
+        progress = queries.goal_progress(repository, _config, matches[0])
+    return {**progress, "question": _goal_question(matches[0], progress)}
+
+
+def _goal_question(goal, progress: dict[str, Any]) -> str:
+    """The prompt the "am I close?" button sends.
+
+    States the measured numbers and asks for interpretation, so the model is
+    never the thing that decided how close the goal is.
+    """
+    from .intake import describe_goal
+
+    described = describe_goal(goal.as_dict())
+    if not progress.get("measurable"):
+        return (
+            f"My goal is {described}. This app cannot measure progress toward it yet "
+            f"({progress.get('detail', '')}). What would you look at instead, using "
+            "only the tools you have?"
+        )
+
+    current = progress.get("current")
+    unit = progress.get("unit", "")
+    return (
+        f"My goal is {described}. Measured over {progress.get('window', 'the recent window')}, "
+        f"I am currently at {current} {unit} against a target of {goal.target_value} {unit} "
+        f"({progress.get('detail', '')}). Am I close, and what does the trend say? "
+        "Use the numbers I have given you rather than recomputing them."
+    )
 
 
 class NewConstraint(BaseModel):

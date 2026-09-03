@@ -7,13 +7,20 @@ import {
 import {
   Card, Columns, fmt, LineChart, Radar, TableTwin, TargetBars, type Point,
 } from "../charts/primitives";
+import { GoalStrip } from "../components/GoalStrip";
 import { MetricCard } from "../components/shell";
 import { ExerciseIcon } from "../components/ExerciseIcon";
 import { VitalsCard } from "../components/VitalsCard";
 import { WriteBack } from "../components/WriteBack";
 import { ErrorNote, Loading } from "./RunScreen";
 
-export function GymScreen({ range, reloadKey }: { range: Range; reloadKey: number }) {
+export function GymScreen({
+  range, reloadKey, onAsk,
+}: {
+  range: Range;
+  reloadKey: number;
+  onAsk: (question: string) => void;
+}) {
   const [data, setData] = useState<GymSection | null>(null);
   const [vitals, setVitals] = useState<Vitals | null>(null);
   const [catalog, setCatalog] = useState<ExerciseSummary[]>([]);
@@ -50,6 +57,7 @@ export function GymScreen({ range, reloadKey }: { range: Range; reloadKey: numbe
     <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) 300px", gap: "var(--gap)", alignItems: "start" }}
          className="gym-grid">
       <div style={{ display: "grid", gap: "var(--gap)", minWidth: 0 }}>
+        <GoalStrip section="gym" reloadKey={reloadKey} onAsk={onAsk} />
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(250px, 1fr))", gap: "var(--gap)" }}>
           <MetricCard
             label="Tonnage"

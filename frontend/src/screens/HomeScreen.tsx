@@ -18,12 +18,20 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   api,
+  type Goal,
+  type GoalProgress,
   type GoalsSection,
   type IntakeProposal,
   type RecurringConstraint,
 } from "../api";
 import { Card } from "../charts/primitives";
-import { describeConstraint, describeGoal } from "../goalText";
+import {
+  describeConstraint,
+  describeGoal,
+  describeProgress,
+  percentOf,
+  statusOf,
+} from "../goalText";
 import { ErrorNote, Loading } from "./RunScreen";
 
 const chipStyle = {
@@ -327,13 +335,14 @@ export function HomeScreen({ reloadKey }: { reloadKey: number }) {
   const [data, setData] = useState<GoalsSection | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [localKey, setLocalKey] = useState(0);
+  const [showArchived, setShowArchived] = useState(false);
 
   const reload = useCallback(() => setLocalKey((key) => key + 1), []);
 
   useEffect(() => {
     let live = true;
     api
-      .goals()
+      .goals(true)
       .then((body) => live && setData(body))
       .catch((exc) => live && setError(exc instanceof Error ? exc.message : String(exc)));
     return () => {
@@ -344,44 +353,48 @@ export function HomeScreen({ reloadKey }: { reloadKey: number }) {
   if (error) return <ErrorNote message={error} />;
   if (!data) return <Loading />;
 
-  const active = data.goals.filter((goal) => goal.status === "active");
+  const shown = showArchived
+    ? data.goals
+    : data.goals.filter((goal) => goal.status === "active");
+  const archivedCount = data.goals.filter((goal) => goal.status !== "active").length;
 
   return (
     <div style={{ display: "grid", gap: "var(--gap)" }}>
       <Intake onSaved={reload} />
 
       <Card
-        title="Active goals"
+        title="Your goals"
         caption="What the coach plans toward. Targets are the weekly maintenance level; these are what you are chasing."
+        action={
+          archivedCount > 0 ? (
+            <button
+              onClick={() => setShowArchived((on) => !on)}
+              style={{
+                border: "1px solid var(--border)", background: "transparent",
+                color: "var(--text-secondary)", borderRadius: "var(--radius-control)",
+                padding: "4px 12px", fontSize: 12, cursor: "pointer",
+              }}
+            >
+              {showArchived ? "Hide" : `Show ${archivedCount} archived`}
+            </button>
+          ) : undefined
+        }
       >
-        {active.length === 0 ? (
+        {shown.length === 0 ? (
           <div style={{ color: "var(--text-muted)", fontSize: 13 }}>
             No goals yet. Describe one above.
           </div>
         ) : (
-          <ul style={{ margin: 0, paddingLeft: 18, fontSize: 14 }}>
-            {active.map((goal) => (
-              <li key={goal.id} style={{ marginBottom: 8 }}>
-                {describeGoal(goal)}
-                {goal.target_date && (
-                  <span style={{ color: "var(--text-muted)" }}> by {goal.target_date}</span>
-                )}
-                <button
-                  onClick={async () => {
-                    await api.closeGoal(goal.id, "achieved");
-                    reload();
-                  }}
-                  style={{
-                    marginLeft: 10, border: "1px solid var(--border)", background: "transparent",
-                    color: "var(--text-secondary)", borderRadius: "var(--radius-control)",
-                    padding: "2px 10px", fontSize: 12, cursor: "pointer",
-                  }}
-                >
-                  achieved
-                </button>
-              </li>
+          <div style={{ display: "grid", gap: 14 }}>
+            {shown.map((goal) => (
+              <GoalRow
+                key={goal.id}
+                goal={goal}
+                progress={data.progress?.[String(goal.id)]}
+                onChanged={reload}
+              />
             ))}
-          </ul>
+          </div>
         )}
 
         {data.running_target && (
@@ -393,6 +406,143 @@ export function HomeScreen({ reloadKey }: { reloadKey: number }) {
       </Card>
 
       <Constraints constraints={data.constraints} onChange={reload} />
+    </div>
+  );
+}
+
+/** One goal: what it is, how close it is, and what can be done to it.
+ *
+ * "Archive" is `abandoned`, not a delete. A goal is an input to past planning
+ * decisions -- the coach reads active goals when it writes a rationale -- so
+ * destroying one would rewrite the recorded reason a past week looked as it
+ * did. Editing supersedes for the same reason.
+ */
+function GoalRow({
+  goal, progress, onChanged,
+}: {
+  goal: Goal;
+  progress?: GoalProgress;
+  onChanged: () => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [value, setValue] = useState(String(goal.target_value));
+  const [busy, setBusy] = useState(false);
+
+  const status = statusOf(goal.status);
+  const percent = percentOf(progress?.fraction);
+  const summary = describeProgress(progress);
+  const archived = goal.status !== "active";
+
+  const act = async (run: () => Promise<unknown>) => {
+    setBusy(true);
+    try {
+      await run();
+      onChanged();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const buttonStyle = {
+    border: "1px solid var(--border)", background: "transparent",
+    color: "var(--text-secondary)", borderRadius: "var(--radius-control)",
+    padding: "2px 10px", fontSize: 12, cursor: busy ? "default" : "pointer",
+  } as const;
+
+  return (
+    <div style={{ opacity: archived ? 0.55 : 1 }}>
+      <div style={{ display: "flex", alignItems: "baseline", gap: 10, flexWrap: "wrap" }}>
+        {/* The dot carries the glance, the word carries the meaning. Status
+            colour is reserved and must never be the only signal -- and --good
+            measures 3.35:1 on the light surface, fine for a mark and below AA
+            for small text. */}
+        <span
+          aria-hidden
+          style={{
+            width: 8, height: 8, borderRadius: 4,
+            background: status.token, flex: "0 0 auto",
+          }}
+        />
+        <span
+          style={{
+            fontSize: 14,
+            color: "var(--text-primary)",
+            textDecoration: archived ? "line-through" : "none",
+          }}
+        >
+          {describeGoal(goal)}
+        </span>
+        {goal.target_date && (
+          <span style={{ fontSize: 12, color: "var(--text-muted)" }}>by {goal.target_date}</span>
+        )}
+        <span style={{ fontSize: 11, color: "var(--text-secondary)" }}>{status.label}</span>
+
+        <span style={{ flex: "1 1 auto" }} />
+
+        {!archived && (
+          <>
+            <button onClick={() => setEditing((on) => !on)} disabled={busy} style={buttonStyle}>
+              {editing ? "cancel" : "edit"}
+            </button>
+            <button
+              onClick={() => act(() => api.closeGoal(goal.id, "achieved"))}
+              disabled={busy}
+              style={buttonStyle}
+            >
+              achieved
+            </button>
+            <button
+              onClick={() => act(() => api.closeGoal(goal.id, "abandoned"))}
+              disabled={busy}
+              style={buttonStyle}
+              title="Archived, not deleted: past plans were written against this goal."
+            >
+              archive
+            </button>
+          </>
+        )}
+      </div>
+
+      {editing && (
+        <div style={{ display: "flex", gap: 8, marginTop: 8, alignItems: "center" }}>
+          <input
+            value={value}
+            onChange={(event) => setValue(event.target.value)}
+            aria-label={`New target for ${describeGoal(goal)}`}
+            style={{
+              width: 120, background: "var(--bg)", color: "var(--text-primary)",
+              border: "1px solid var(--border)", borderRadius: "var(--radius-control)",
+              padding: "4px 8px", fontSize: 13,
+            }}
+          />
+          <button
+            onClick={() =>
+              act(async () => {
+                await api.reviseGoal(goal.id, {
+                  type: goal.type,
+                  subject: goal.subject,
+                  target_value: Number(value),
+                  target_date: goal.target_date,
+                });
+                setEditing(false);
+              })
+            }
+            disabled={busy || Number.isNaN(Number(value))}
+            style={{ ...buttonStyle, color: "var(--accent)" }}
+          >
+            save
+          </button>
+          <span style={{ fontSize: 11, color: "var(--text-muted)" }}>
+            The old goal is archived, not overwritten.
+          </span>
+        </div>
+      )}
+
+      <div style={{ fontSize: 12, color: "var(--text-secondary)", marginTop: 4 }}>
+        {summary
+          ? `${summary}${percent !== null ? ` \u00b7 ${percent}%` : ""}`
+          : progress?.detail || ""}
+      </div>
     </div>
   );
 }

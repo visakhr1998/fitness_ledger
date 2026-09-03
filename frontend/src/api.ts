@@ -248,10 +248,33 @@ export type RecurringConstraint = {
   reason: string | null;
 };
 
+/** How close a goal is. Computed server-side by `queries.goal_progress` — the
+ *  model is never the thing that decided this number.
+ *
+ *  `current` is null rather than 0 when a goal cannot be measured yet, because
+ *  "no data" and "no progress" are different answers and a bar would show them
+ *  identically. `measurable` says which one it is. */
+export type GoalProgress = {
+  goal_id: number | null;
+  type: string;
+  subject: string | null;
+  target: number;
+  current: number | null;
+  fraction: number | null;
+  unit: string;
+  window: string;
+  detail: string;
+  measurable: boolean;
+  /** Only on the single-goal endpoint: the prompt to hand the chat dock. */
+  question?: string;
+};
+
 export type GoalsSection = {
   goals: Goal[];
   running_target: { distance_km_per_week: number; sessions_per_week: number } | null;
   constraints: RecurringConstraint[];
+  /** Keyed by goal id as a string, because JSON object keys are strings. */
+  progress: Record<string, GoalProgress>;
 };
 
 /** What the intake parser found. Nothing here is saved until the user confirms.
@@ -375,7 +398,13 @@ export const api = {
       `/api/writeback/${proposalId}/approve`,
       "POST",
     ),
-  goals: () => get<GoalsSection>("/api/goals"),
+  goals: (includeInactive = false) =>
+    get<GoalsSection>(`/api/goals${includeInactive ? "?include_inactive=true" : ""}`),
+  /** Progress plus the composed question for the chat dock. */
+  goalProgress: (id: number) => get<GoalProgress>(`/api/goals/${id}/progress`),
+  /** Edit by superseding: the old goal is archived, not overwritten. */
+  reviseGoal: (id: number, body: Record<string, unknown>) =>
+    send<Goal>(`/api/goals/${id}`, "PATCH", body),
   addGoal: (body: Record<string, unknown>) => send<{ id: number }>("/api/goals", "POST", body),
   closeGoal: (id: number, status: "achieved" | "abandoned") =>
     send<{ id: number }>(`/api/goals/${id}`, "PUT", { status }),

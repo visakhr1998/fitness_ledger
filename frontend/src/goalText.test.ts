@@ -7,7 +7,16 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { clock, describeConstraint, describeGoal } from "./goalText";
+import {
+  clock,
+  describeConstraint,
+  describeGoal,
+  describeProgress,
+  goalSection,
+  goalsFor,
+  percentOf,
+  statusOf,
+} from "./goalText";
 
 describe("clock", () => {
   it("renders a marathon target as hours, not seconds", () => {
@@ -76,5 +85,85 @@ describe("describeConstraint", () => {
     expect(describeConstraint({ weekday: 6, kind: "no_intervals", reason: null })).toBe(
       "Sundays: easy running only",
     );
+  });
+});
+
+describe("goalSection", () => {
+  it("sends running goals to Run and lifting goals to Gym", () => {
+    expect(goalSection("race_time")).toBe("run");
+    expect(goalSection("running_volume")).toBe("run");
+    expect(goalSection("running_aei")).toBe("run");
+    expect(goalSection("strength_1rm")).toBe("gym");
+  });
+
+  it("puts consistency on both, because it is about the week not a discipline", () => {
+    expect(goalSection("consistency")).toBe("both");
+  });
+
+  it("shows an unrecognised type rather than hiding it", () => {
+    // A goal type added on the server must not silently vanish from every screen.
+    expect(goalSection("future_type")).toBe("both");
+  });
+});
+
+describe("goalsFor", () => {
+  const goals = [
+    { type: "race_time", status: "active" },
+    { type: "strength_1rm", status: "active" },
+    { type: "consistency", status: "active" },
+    { type: "running_volume", status: "achieved" },
+    { type: "strength_1rm", status: "abandoned" },
+  ];
+
+  it("filters by discipline and keeps consistency on both", () => {
+    expect(goalsFor("run", goals).map((g) => g.type)).toEqual(["race_time", "consistency"]);
+    expect(goalsFor("gym", goals).map((g) => g.type)).toEqual(["strength_1rm", "consistency"]);
+  });
+
+  it("shows only active goals — an archived one is not something you are chasing", () => {
+    expect(goalsFor("run", goals).every((g) => g.status === "active")).toBe(true);
+    expect(goalsFor("gym", goals)).toHaveLength(2);
+  });
+});
+
+describe("statusOf", () => {
+  it("gives every status a word, not just a colour", () => {
+    // Status colour is reserved and must never be the only signal: --good is
+    // 3.35:1 on the light surface, fine for a dot and below AA for text.
+    expect(statusOf("achieved").label).toBe("achieved");
+    expect(statusOf("abandoned").label).toBe("archived");
+    expect(statusOf("active").label).toBe("active");
+  });
+
+  it("falls back rather than rendering an unlabelled chip", () => {
+    expect(statusOf("nonsense").label).toBe("active");
+  });
+});
+
+describe("describeProgress", () => {
+  it("reads as a comparison, with units", () => {
+    expect(
+      describeProgress({ measurable: true, current: 54, target: 100, unit: "kg" }),
+    ).toBe("54 kg of 100 kg");
+  });
+
+  it("says nothing when the goal cannot be measured", () => {
+    // race_time until VDOT exists. "0 of 1320" would read as no progress
+    // rather than no measurement, which is a different and wrong claim.
+    expect(describeProgress({ measurable: false, target: 1320, unit: "s" })).toBeNull();
+    expect(describeProgress({ measurable: true, current: null, target: 100 })).toBeNull();
+    expect(describeProgress(undefined)).toBeNull();
+  });
+});
+
+describe("percentOf", () => {
+  it("rounds a fraction to a percent", () => {
+    expect(percentOf(0.909)).toBe(91);
+    expect(percentOf(0)).toBe(0);
+  });
+
+  it("returns null rather than zero when there is no measurement", () => {
+    expect(percentOf(null)).toBeNull();
+    expect(percentOf(undefined)).toBeNull();
   });
 });

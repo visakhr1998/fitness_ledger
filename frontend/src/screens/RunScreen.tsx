@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { api, type Range, type RunSection, type Vitals } from "../api";
 import { Card, fmt, LineChart, PillBars, shortDate, Spark, TableTwin, type Point } from "../charts/primitives";
+import { GoalStrip } from "../components/GoalStrip";
 import { MetricCard } from "../components/shell";
 import { VitalsCard } from "../components/VitalsCard";
 
@@ -17,7 +18,13 @@ function runDuration(seconds: number | null): string | null {
   return hours > 0 ? `${hours}:${pad(minutes)}:${pad(secs)}` : `${minutes}:${pad(secs)}`;
 }
 
-export function RunScreen({ range, reloadKey }: { range: Range; reloadKey: number }) {
+export function RunScreen({
+  range, reloadKey, onAsk,
+}: {
+  range: Range;
+  reloadKey: number;
+  onAsk: (question: string) => void;
+}) {
   const [data, setData] = useState<RunSection | null>(null);
   const [vitals, setVitals] = useState<Vitals | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -73,6 +80,11 @@ export function RunScreen({ range, reloadKey }: { range: Range; reloadKey: numbe
     <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) 300px", gap: "var(--gap)", alignItems: "start" }}
          className="run-grid">
       <div style={{ display: "grid", gap: "var(--gap)", minWidth: 0 }}>
+        {/* Above the charts: a goal you only see on another tab is one you
+            never read while looking at the data it is about. Not scoped by the
+            filter, for the reason the coach strip is not -- a goal is not a
+            window over past training. */}
+        <GoalStrip section="run" reloadKey={reloadKey} onAsk={onAsk} />
         <MetricCard
           label="Aerobic Efficiency Index"
           value={data.aei.latest === null ? "–" : fmt(data.aei.latest, 3)}

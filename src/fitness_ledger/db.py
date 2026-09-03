@@ -166,7 +166,8 @@ CREATE TABLE IF NOT EXISTS goals (
     target_value REAL NOT NULL,
     target_date  TEXT,
     status       TEXT NOT NULL DEFAULT 'active',
-    created_at   TEXT NOT NULL
+    created_at   TEXT NOT NULL,
+    supersedes   INTEGER
 );
 
 -- Only exceptions are recorded: a day with no row is available. Declaring a
@@ -242,6 +243,7 @@ class Repository(Protocol):
     def add_goal(self, goal: Goal) -> Goal: ...
     def get_goals(self, include_inactive: bool = False) -> list[Goal]: ...
     def set_goal_status(self, goal_id: int, status: str) -> bool: ...
+    def revise_goal(self, goal_id: int, revision: Goal) -> Goal | None: ...
     def get_running_target(self) -> RunningTarget | None: ...
     def set_running_target(self, target: RunningTarget | None) -> None: ...
     def set_availability(self, entry: Availability) -> None: ...
@@ -276,6 +278,7 @@ class SQLiteRepository:
         columns added later never appear without this.
         """
         additions = {
+            "goals": [("supersedes", "INTEGER")],
             "run_metrics": [
                 ("reported_distance_m", "REAL"),
                 ("track_coverage", "REAL"),
@@ -699,8 +702,9 @@ class SQLiteRepository:
         """Insert a goal and return it with the assigned id."""
         created = goal.created_at or datetime.now(timezone.utc)
         cur = self.conn.execute(
-            """INSERT INTO goals (type, subject, target_value, target_date, status, created_at)
-               VALUES (?, ?, ?, ?, ?, ?)""",
+            """INSERT INTO goals (type, subject, target_value, target_date, status,
+                                  created_at, supersedes)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
             (
                 goal.type,
                 goal.subject,
@@ -708,6 +712,7 @@ class SQLiteRepository:
                 goal.target_date.isoformat() if goal.target_date else None,
                 goal.status,
                 created.isoformat(),
+                goal.supersedes,
             ),
         )
         self.conn.commit()
@@ -719,6 +724,27 @@ class SQLiteRepository:
             sql += " WHERE status = 'active'"
         sql += " ORDER BY created_at DESC, id DESC"
         return [self._goal(row) for row in self.conn.execute(sql)]
+
+    def revise_goal(self, goal_id: int, revision: Goal) -> Goal | None:
+        """Replace a goal with a new one that points back at it.
+
+        Editing appends rather than overwrites, following `add_plan`. A goal is
+        an input to past planning decisions -- the coach reads active goals when
+        it writes a rationale -- so changing one in place would silently rewrite
+        the recorded reason a past week looked as it did.
+
+        Returns None when there is nothing to revise, so the caller can 404
+        rather than quietly inserting an orphan.
+        """
+        existing = self.conn.execute(
+            "SELECT id FROM goals WHERE id = ?", (goal_id,)
+        ).fetchone()
+        if existing is None:
+            return None
+        self.conn.execute(
+            "UPDATE goals SET status = 'abandoned' WHERE id = ?", (goal_id,)
+        )
+        return self.add_goal(replace(revision, supersedes=goal_id, status="active"))
 
     def set_goal_status(self, goal_id: int, status: str) -> bool:
         """Mark a goal achieved or abandoned. Goals are never deleted -- an
@@ -741,6 +767,7 @@ class SQLiteRepository:
             target_date=date.fromisoformat(row["target_date"]) if row["target_date"] else None,
             status=row["status"],
             created_at=datetime.fromisoformat(row["created_at"]) if row["created_at"] else None,
+            supersedes=row["supersedes"] if "supersedes" in row.keys() else None,
         )
 
     def get_running_target(self) -> RunningTarget | None:
