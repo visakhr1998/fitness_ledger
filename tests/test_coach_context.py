@@ -231,3 +231,78 @@ def test_state_reaches_the_session_through_adk(bound):
     for key in STATE_KEYS:
         assert key in state, key
     assert len(state["training_days"]) == 7
+
+
+# --- the pool reaching the planner ------------------------------------------
+#
+# `covering_pool` was built, written to session state and used by the assembler
+# to validate -- but STRENGTH_INSTRUCTION had no placeholder for it and the
+# agent was told to call get_exercise_pool instead. A model that skips the call
+# has nothing to choose from, and on 2026-09-02 DeepSeek made no tool calls and
+# invented 26 ids, so no day of the week could be written to Hevy.
+
+
+def test_the_pool_renders_with_ids_the_proposal_can_copy():
+    from fitness_ledger.coach.context import pool_summary
+
+    rendered = pool_summary({
+        "exercise_pool": [
+            {
+                "exercise_template_id": "79D0BB3A",
+                "title": "Bench Press (Barbell)",
+                "primary_muscle_group": "chest",
+                "secondary_muscle_groups": ["triceps", "shoulders"],
+            },
+        ]
+    })
+
+    # The id is what validation matches on; a rendering that showed only titles
+    # would leave the model to guess it.
+    assert "79D0BB3A" in rendered
+    assert "Bench Press (Barbell)" in rendered
+    assert "chest:" in rendered
+    assert "also triceps, shoulders" in rendered
+
+
+def test_the_pool_is_grouped_by_the_muscle_the_deficit_names():
+    """The deficit reads "lats: 4 of 14 sets"; the pool must be searchable the
+    same way."""
+    from fitness_ledger.coach.context import pool_summary
+
+    rendered = pool_summary({
+        "exercise_pool": [
+            {"exercise_template_id": "A", "title": "Row", "primary_muscle_group": "lats",
+             "secondary_muscle_groups": []},
+            {"exercise_template_id": "B", "title": "Pulldown", "primary_muscle_group": "lats",
+             "secondary_muscle_groups": []},
+            {"exercise_template_id": "C", "title": "Squat", "primary_muscle_group": "quadriceps",
+             "secondary_muscle_groups": []},
+        ]
+    })
+    lines = rendered.splitlines()
+    assert lines.index("lats:") < lines.index("quadriceps:")
+    assert lines[lines.index("lats:") + 1].strip().startswith("A ")
+
+
+def test_an_empty_pool_says_so_rather_than_rendering_nothing():
+    # A blank section reads as "no constraint" and invites invention, which is
+    # the exact failure this renderer exists to prevent.
+    from fitness_ledger.coach.context import pool_summary
+
+    assert "not been synced" in pool_summary({"exercise_pool": []})
+    assert "not been synced" in pool_summary({})
+
+
+def test_the_context_reader_publishes_the_rendered_pool(bound):
+    """The state key the instruction interpolates must actually be written.
+
+    This is the assertion that would have caught the original bug: the pool was
+    in state under `exercise_pool` and the instruction never read it.
+    """
+    from fitness_ledger.coach.context import gather_context, pool_summary
+
+    repo, config = bound
+    state = gather_context(repo, config)
+    state["pool_summary"] = pool_summary(state)
+    assert state["pool_summary"]
+    assert state["pool_summary"] != "  (no exercises available -- the catalogue has not been synced)"

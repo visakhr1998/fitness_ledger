@@ -370,6 +370,75 @@ def test_the_strength_planner_cannot_recompute_the_deficit(bound):
     _, strength, _ = build_coach(repo, config).sub_agents
 
     names = {getattr(t, "__name__", getattr(getattr(t, "func", None), "__name__", "")) for t in strength.tools}
-    assert names == {"get_exercise_pool", "get_progression_state"}
+    assert names == {"get_progression_state"}
     assert "get_volume_vs_target" not in names
     assert "get_neglected" not in names
+    # get_exercise_pool went the same way on 2026-09-02. While it existed, the
+    # pool reached the planner only if the model chose to ask -- Gemini asked,
+    # DeepSeek did not, and the same code produced a usable week on one
+    # provider and 26 invented ids on the other.
+    assert "get_exercise_pool" not in names
+
+
+def test_the_instruction_carries_the_exercise_pool():
+    """The bug this file exists to prevent a repeat of.
+
+    STRENGTH_INSTRUCTION had placeholders for the deficit, goals, days, week
+    and continuity -- and none for the pool. `covering_pool` was built and
+    written to session state, the assembler validated against it, and the
+    planner was told to fetch it with a tool. On 2026-09-02 DeepSeek made no
+    tool calls, invented ids like `bench_press`, and all 26 exercises failed
+    validation: a full week that could not be written to Hevy.
+
+    Asserting on the placeholder rather than on model behaviour, because the
+    behaviour differed by provider -- Gemini made the call and papered over the
+    gap for months.
+    """
+    import re
+
+    from fitness_ledger.coach.agent import STRENGTH_INSTRUCTION
+
+    placeholders = set(re.findall(r"{(\w+)}", STRENGTH_INSTRUCTION))
+    assert "pool_summary" in placeholders
+
+    # And it must not send the planner back to a tool that no longer exists.
+    assert "get_exercise_pool" not in STRENGTH_INSTRUCTION
+
+
+def test_the_instruction_says_ids_are_opaque_codes():
+    # The failure mode was plausible-looking slugs, not obvious nonsense, so
+    # the instruction names the shape of a real id.
+    from fitness_ledger.coach.agent import STRENGTH_INSTRUCTION
+
+    assert "exercise_template_id" in STRENGTH_INSTRUCTION
+    assert "79D0BB3A" in STRENGTH_INSTRUCTION
+
+
+def test_every_instruction_placeholder_is_published_to_state(bound):
+    """A placeholder with no state key renders literally and silently.
+
+    ADK substitutes `{key}` from session state. A typo, or a key the context
+    reader forgets to write, leaves the model reading "{pool_summary}" as text
+    -- which looks like a prompt-engineering problem and is really a wiring
+    one.
+    """
+    import re
+
+    from fitness_ledger.coach.agent import STRENGTH_INSTRUCTION
+    from fitness_ledger.coach.context import (
+        continuity_summary,
+        deficit_summary,
+        gather_context,
+        pool_summary,
+        training_days,
+    )
+
+    repo, config = bound
+    state = gather_context(repo, config)
+    state["training_days"] = training_days(state)
+    state["deficit_summary"] = deficit_summary(state)
+    state["continuity_summary"] = continuity_summary(state)
+    state["pool_summary"] = pool_summary(state)
+
+    missing = set(re.findall(r"{(\w+)}", STRENGTH_INSTRUCTION)) - set(state)
+    assert not missing, f"instruction reads state keys nothing writes: {sorted(missing)}"

@@ -200,6 +200,44 @@ def deficit_summary(context: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def pool_summary(context: dict[str, Any]) -> str:
+    """The exercise pool, rendered into the instruction.
+
+    This exists because the pool was never reaching the planner. `covering_pool`
+    was built, written to session state and used by the assembler to validate --
+    but `STRENGTH_INSTRUCTION` had no placeholder for it, and the agent was told
+    to call `get_exercise_pool` instead. A model that skips the call has nothing
+    to choose from.
+
+    Measured on 2026-09-02 with DeepSeek: it made *no* tool calls and invented
+    plausible ids -- `bench_press`, `squat` -- so all 26 exercises failed
+    validation and no day could be written to Hevy. Gemini had been making the
+    call and papering over the gap. Handing the pool over is what makes the
+    behaviour independent of whether a given model chooses to fetch it.
+
+    Grouped by primary muscle because that is how the deficit reads: the agent
+    is told "lats: 4 of 14 sets" and needs to find the lat exercises.
+    """
+    pool = context.get("exercise_pool") or []
+    if not pool:
+        return "  (no exercises available -- the catalogue has not been synced)"
+
+    by_muscle: dict[str, list[dict[str, Any]]] = {}
+    for row in pool:
+        by_muscle.setdefault(row.get("primary_muscle_group") or "other", []).append(row)
+
+    lines: list[str] = []
+    for muscle in sorted(by_muscle):
+        lines.append(f"{muscle}:")
+        for row in by_muscle[muscle]:
+            also = ", ".join(row.get("secondary_muscle_groups") or ())
+            suffix = f" (also {also})" if also else ""
+            lines.append(
+                f"  {row['exercise_template_id']}  {row['title']}{suffix}"
+            )
+    return "\n".join(lines)
+
+
 def training_days(context: dict[str, Any]) -> list[str]:
     """Days of the planned week that are actually trainable.
 
@@ -237,6 +275,7 @@ def build_context_reader(repo: SQLiteRepository, config: Config, week_start: dat
             state["training_days"] = training_days(state)
             state["deficit_summary"] = deficit_summary(state)
             state["continuity_summary"] = continuity_summary(state)
+            state["pool_summary"] = pool_summary(state)
             yield Event(
                 author=self.name,
                 actions=EventActions(state_delta=state),
