@@ -191,7 +191,10 @@ def test_the_plan_endpoint_is_not_scoped_by_the_filter(client):
     filtered = client.get("/api/plan", params={"window": "last-7-days"}).json()
 
     assert plain == filtered
-    assert set(plain) == {"available", "reason", "plan", "problems", "adherence"}
+    # `rules` joined the shape on 2026-09-02: the deterministic half of why a
+    # week looks as it does. Still not window-scoped -- it describes the
+    # machinery, not a period.
+    assert set(plain) == {"available", "reason", "plan", "problems", "adherence", "rules"}
 
 
 def test_a_malformed_week_is_a_400_not_a_500(client):

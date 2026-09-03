@@ -325,3 +325,61 @@ def test_clearing_a_day_that_was_never_lost_is_not_an_error(client):
     res = client.delete(f"/api/availability/{MONDAY.isoformat()}")
     assert res.status_code == 200
     assert res.json()["cleared"] is False
+
+
+# --- why the week looks as it does ------------------------------------------
+#
+# The Week tab showed the model's rationale and nothing else, which makes a plan
+# read as an assertion. The numbers were never the model's to choose, and that
+# is the half worth being able to check.
+
+
+def test_the_rules_are_read_off_the_constants_not_restated(client):
+    """A hand-maintained copy of a limit is the API-table mistake.
+
+    That table was wrong in three path parameters within a week of being
+    written, which is why it was deleted rather than corrected. These figures
+    come from `Preferences`, so a changed preference cannot leave the
+    explanation behind.
+    """
+    from fitness_ledger.planning import (
+        MAX_SETS_PER_EXERCISE,
+        MAX_SETS_PER_SESSION,
+        MIN_SETS_PER_EXERCISE,
+    )
+
+    rules = client.get("/api/plan").json()["rules"]
+
+    assert rules["limits"]["min_sets_per_exercise"] == MIN_SETS_PER_EXERCISE
+    assert rules["limits"]["max_sets_per_exercise"] == MAX_SETS_PER_EXERCISE
+    assert rules["limits"]["max_sets_per_session"] == MAX_SETS_PER_SESSION
+
+
+def test_the_priority_order_is_the_one_claude_md_calls_most_important(client):
+    # volume per muscle group -> full-body coverage -> runs on track -> session
+    # count. Protected top-first; the later items are given up first.
+    rules = client.get("/api/plan").json()["rules"]
+    assert rules["priority_order"] == [
+        "volume per muscle group",
+        "full-body coverage",
+        "runs on track",
+        "session count",
+    ]
+
+
+def test_the_rules_say_set_counts_did_not_come_from_the_model(client):
+    rules = client.get("/api/plan").json()["rules"]
+    assert "weekly volume target" in rules["set_counts_from"]
+    assert "planning.allocate" in rules["set_counts_from"]
+
+
+def test_the_rules_are_present_even_with_no_plan_yet(client):
+    """They describe the machinery, not a particular week.
+
+    Returning them only alongside a plan would mean the one screen that could
+    explain what planning does is empty exactly when someone is deciding
+    whether to try it.
+    """
+    body = client.get("/api/plan").json()
+    assert "rules" in body
+    assert body["rules"]["priority_order"]

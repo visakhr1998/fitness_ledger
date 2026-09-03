@@ -143,6 +143,10 @@ export type PlanSection = {
     supersedes: number | null;
     rationale: string;
     trade_offs: string;
+    /** Tools the model called. An empty trace is the *expected* shape: the
+     *  context reader injects the deficit and the pool, so a good run has
+     *  nothing left to fetch. */
+    agent_trace: { tool?: string; args?: Record<string, unknown> }[];
     total_sets: number;
     sessions: {
       date: string;
@@ -159,6 +163,20 @@ export type PlanSection = {
     }[];
   } | null;
   problems: string[];
+  /** The deterministic half of why the week looks as it does. Read off
+   *  planning.py's constants and your own preferences server-side, so the UI
+   *  never keeps a second copy of a number that can drift. */
+  rules?: {
+    priority_order: string[];
+    set_counts_from: string;
+    limits: {
+      min_sets_per_exercise: number;
+      max_sets_per_exercise: number;
+      max_sets_per_session: number;
+      min_rest_days_same_muscle: number;
+      allow_run_after_leg_day: boolean;
+    };
+  };
   adherence: {
     not_started: boolean;
     sessions_planned: number;

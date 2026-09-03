@@ -16,7 +16,7 @@ from . import icons, queries, vitals as vitals_module
 from .config import Config
 from .db import SQLiteRepository
 from .models import WORKING_SET_TYPES
-from .planning import validate
+from .planning import Preferences, validate
 from .progression import RepRange, progression_state, stalled
 from .queries import describe_window, get_targets, parse_window, rep_ranges
 from .volume import best_set_per_session, compute_volume, coverage
@@ -395,6 +395,46 @@ def _as_int(raw: object) -> int | None:
 # --- Week ------------------------------------------------------------------
 
 
+# The order that governs a squeezed week. Stated in CLAUDE.md as the single most
+# important encoded rule in the system, and surfaced so a plan can be read as a
+# derivation rather than an assertion.
+PRIORITY_ORDER = (
+    "volume per muscle group",
+    "full-body coverage",
+    "runs on track",
+    "session count",
+)
+
+
+def plan_rules(preferences: Preferences) -> dict[str, Any]:
+    """The deterministic half of why a week looks the way it does.
+
+    Read off the constants and the user's own preferences rather than written
+    out again: a hand-maintained "24 sets" in the UI is the API-table mistake,
+    which was wrong in three parameter names within a week of being written.
+
+    This exists because the Week tab showed the model's rationale and nothing
+    else, which makes a plan read as an assertion. The numbers in it were never
+    the model's to choose -- `planning.allocate` computes every set count from
+    the weekly target -- and that is the part worth being able to check.
+    """
+    return {
+        "priority_order": list(PRIORITY_ORDER),
+        "set_counts_from": (
+            "your weekly volume target, via planning.allocate -- the model "
+            "chooses exercises and days, and has nowhere in its schema to put "
+            "a set count"
+        ),
+        "limits": {
+            "min_sets_per_exercise": preferences.min_sets_per_exercise,
+            "max_sets_per_exercise": preferences.max_sets_per_exercise,
+            "max_sets_per_session": preferences.max_sets_per_session,
+            "min_rest_days_same_muscle": preferences.min_rest_days_same_muscle,
+            "allow_run_after_leg_day": preferences.allow_run_after_leg_day,
+        },
+    }
+
+
 def plan_section(
     repo: SQLiteRepository, config: Config, week: str | None = None
 ) -> dict[str, Any]:
@@ -417,6 +457,7 @@ def plan_section(
             "plan": None,
             "problems": [],
             "adherence": None,
+            "rules": plan_rules(queries.planning_preferences(repo)),
         }
 
     preferences = queries.planning_preferences(repo)
@@ -440,6 +481,7 @@ def plan_section(
 
     return {
         "available": True,
+        "rules": plan_rules(preferences),
         "plan": plan.as_dict(),
         "problems": validate(
             plan.sessions,
