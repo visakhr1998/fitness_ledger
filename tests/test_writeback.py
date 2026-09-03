@@ -152,3 +152,30 @@ def test_propose_rejects_an_empty_selection(client):
 
 def test_approving_an_unknown_proposal_is_a_404(client):
     assert client.post("/api/writeback/9999/approve").status_code == 404
+
+
+# --- claiming a proposal ----------------------------------------------------
+# Hevy has no delete endpoint, so a proposal must be written at most once. The
+# approve path checked `status == 'proposed'` and only marked the row after
+# awaiting Hevy, leaving the 1-2s the subprocess takes as a window in which two
+# callers both saw `proposed` and both created a routine.
+
+
+def test_only_one_caller_can_claim_a_proposal(tmp_path):
+    from fitness_ledger.db import SQLiteRepository
+
+    with SQLiteRepository(tmp_path / "claim.db", 120) as repo:
+        proposal_id = repo.record_proposal(
+            kind="routine", summary="Mon", payload={"title": "Mon"}, diff={}
+        )
+
+        assert repo.claim_proposal(proposal_id) is True
+        # The second caller loses, and loses *before* touching Hevy.
+        assert repo.claim_proposal(proposal_id) is False
+
+
+def test_claiming_a_proposal_that_does_not_exist_is_false(tmp_path):
+    from fitness_ledger.db import SQLiteRepository
+
+    with SQLiteRepository(tmp_path / "claim2.db", 120) as repo:
+        assert repo.claim_proposal(999) is False

@@ -338,3 +338,72 @@ def test_provider_unavailable_is_still_a_runtime_error():
     # which is exactly what a real 429 did before this was added.
     assert issubclass(llm.ProviderUnavailable, llm.ProviderError)
     assert issubclass(llm.ProviderUnavailable, RuntimeError)
+
+
+# --- classifying a provider failure -----------------------------------------
+# Matching a bare "429" anywhere in the message classified
+# `Bad request: invalid argument (request id req_a429bf)` as a quota refusal.
+# The dock told the user to change providers, and the coach -- which shares this
+# judgement -- launched a paid fallback run to re-execute a plan that was going
+# to fail for its own reasons.
+
+
+class _Status(Exception):
+    def __init__(self, message, status_code):
+        super().__init__(message)
+        self.status_code = status_code
+
+
+def test_a_status_code_decides_before_any_text_matching():
+    assert llm.is_quota_refusal(_Status("slow down", 429)) is True
+    # A 400 is a 400 even when its body happens to contain the digits.
+    assert llm.is_quota_refusal(_Status("invalid arg req_a429bf", 400)) is False
+
+
+def test_a_request_id_containing_429_is_not_a_quota_refusal():
+    exc = RuntimeError("Bad request: invalid argument (request id req_a429bf)")
+    assert llm.is_quota_refusal(exc) is False
+    assert llm.describe_provider_failure(exc) is None
+
+
+def test_a_real_quota_refusal_is_still_recognised():
+    assert llm.is_quota_refusal(RuntimeError("Error code: 429 - too many requests"))
+    assert llm.is_quota_refusal(RuntimeError("RESOURCE_EXHAUSTED"))
+    assert llm.is_quota_refusal(RuntimeError("You exceeded your current quota"))
+
+
+def test_the_coach_and_the_dock_cannot_disagree_about_a_quota_error():
+    """They were two independent matchers and had already drifted.
+
+    This one knew RESOURCE_EXHAUSTED and the dock's did not, so the same
+    exception could be a quota problem for one and a real fault for the other.
+    The coach's is the expensive disagreement: a false positive spends money.
+    """
+    from fitness_ledger.coach import is_quota_error
+
+    for exc in (
+        RuntimeError("RESOURCE_EXHAUSTED"),
+        RuntimeError("Bad request (request id req_a429bf)"),
+        _Status("rate limited", 429),
+        _Status("bad request", 400),
+    ):
+        assert is_quota_error(exc) is llm.is_quota_refusal(exc)
+
+
+def test_a_rejected_key_is_explained_rather_than_raised_raw():
+    """Gemini's shim answers a bad key with 400 'Please pass a valid API key',
+    not a 401, so matching only AuthenticationError left the commonest setup
+    mistake in this app surfacing as an unexplained 500."""
+    message = llm.describe_provider_failure(
+        _Status("Error code: 400 - Please pass a valid API key", 400)
+    )
+    assert message and "credentials" in message
+    assert "LLM_PROVIDER" in message
+
+
+def test_a_retired_model_id_is_explained():
+    class NotFoundError(Exception):
+        pass
+
+    message = llm.describe_provider_failure(NotFoundError("model not found"))
+    assert message and "does not recognise that model" in message

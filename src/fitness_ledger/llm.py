@@ -22,6 +22,7 @@ that would put provider-specific code on the path where numbers are produced.
 from __future__ import annotations
 
 import json
+import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any
@@ -104,21 +105,86 @@ def describe_provider_failure(exc: BaseException) -> str | None:
     on.
     """
     name = type(exc).__name__
-    text = str(exc)
 
-    if "Timeout" in name or "timed out" in text.lower():
+    if "Timeout" in name or "timed out" in str(exc).lower():
         return (
             "The model did not answer in time. This provider's response time "
             "varies a lot, so trying again often works. Raise "
             "LLM_TIMEOUT_SECONDS in .env if it keeps happening."
         )
-    if "RateLimit" in name or "429" in text or "quota" in text.lower():
+    if is_quota_refusal(exc):
         return (
             "The model provider refused the request: quota exhausted. Free "
             "tiers reset on their own schedule -- wait, or point LLM_PROVIDER "
             "at a different provider in .env."
         )
+    if _is_credential_failure(exc):
+        return (
+            "The model provider rejected the credentials. Check the API key for "
+            "the provider named by LLM_PROVIDER in .env."
+        )
+    if "NotFound" in name:
+        return (
+            "The model provider does not recognise that model. Check GEMINI_MODEL "
+            "or LLM_MODEL in .env -- a model id can stop being available."
+        )
+    if "APIConnection" in name or "Connection" in name:
+        return (
+            "Could not reach the model provider. Check the network, and "
+            "LLM_BASE_URL in .env if you have set one."
+        )
     return None
+
+
+def _is_credential_failure(exc: BaseException) -> bool:
+    """Whether the provider rejected the key rather than the request.
+
+    Not just the exception class: Gemini's OpenAI-compatible shim answers a bad
+    key with `400 BadRequestError: Please pass a valid API key`, not a 401, so
+    matching only `AuthenticationError` left the commonest setup mistake in this
+    app reporting as an unexplained 500.
+    """
+    name = type(exc).__name__
+    if "Authentication" in name or "PermissionDenied" in name:
+        return True
+    if getattr(exc, "status_code", None) in (401, 403):
+        return True
+
+    lowered = str(exc).lower()
+    return (
+        "api key" in lowered
+        or "api_key" in lowered
+        or "unauthorized" in lowered
+        or "invalid authentication" in lowered
+    )
+
+
+def is_quota_refusal(exc: BaseException) -> bool:
+    """Whether the provider refused because we asked too often.
+
+    The status code first, because it is the thing that actually means 429.
+    Both SDKs expose it on their status errors, and LiteLLM carries one too.
+
+    Text is the fallback, and it is anchored: matching a bare "429" anywhere in
+    the message classified `Bad request: invalid argument (request id
+    req_a429bf)` as a quota refusal, which told the user to change providers and
+    -- because the coach shares this judgement -- launched a paid fallback run to
+    re-execute a plan that was going to fail for its own reasons.
+    """
+    status = getattr(exc, "status_code", None)
+    if isinstance(status, int):
+        return status == 429
+
+    if "RateLimit" in type(exc).__name__:
+        return True
+
+    lowered = str(exc).lower()
+    return (
+        "resource_exhausted" in lowered
+        or "quota" in lowered
+        or "too many requests" in lowered
+        or re.search(r"(?<!\w)429(?!\w)", lowered) is not None
+    )
 
 
 def to_openai_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:

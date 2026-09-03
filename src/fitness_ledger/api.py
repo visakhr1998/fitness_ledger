@@ -28,6 +28,55 @@ WEB_DIR = Path(__file__).parent / "web"
 app = FastAPI(title="Fitness ledger", version="0.3.0")
 _config = Config.load()
 
+# Methods that change something. GET/HEAD/OPTIONS are readable cross-origin only
+# with CORS headers we never send, so they need no guard here.
+UNSAFE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+
+# Origins the dashboard is actually served from: this app on any port, and the
+# Vite dev server. A page on the public internet cannot claim one of these --
+# the browser sets Origin itself and will not let a script forge it -- so an
+# allowlist of loopback hosts is what separates our own UI from everyone else.
+LOCAL_ORIGIN_HOSTS = frozenset({"localhost", "127.0.0.1", "[::1]"})
+
+
+def _is_local_origin(origin: str) -> bool:
+    from urllib.parse import urlparse
+
+    try:
+        return (urlparse(origin).hostname or "") in LOCAL_ORIGIN_HOSTS
+    except ValueError:
+        return False
+
+
+@app.middleware("http")
+async def block_cross_site_writes(request, call_next):
+    """Refuse state-changing requests that come from another site.
+
+    Every write here is bodyless or takes a plain JSON body, and approving a
+    write-back is irreversible -- Hevy has no delete endpoint. A bodyless POST
+    is a CORS *simple request*, so it needs no preflight and fires even though
+    the attacker cannot read the reply: any page the user happens to have open
+    could walk `/api/writeback/{id}/approve` over small sequential ids and put
+    routines in the real account, or spend the model quota via `/api/plan`.
+
+    Browsers attach `Origin` to exactly these requests and refuse to let script
+    change it, so checking it is enough. A missing `Origin` is allowed on
+    purpose: curl, the CLI and the test client send none, and a browser cannot
+    omit it cross-origin.
+    """
+    origin = request.headers.get("origin")
+    if request.method in UNSAFE_METHODS and origin and not _is_local_origin(origin):
+        return JSONResponse(
+            status_code=403,
+            content={
+                "detail": (
+                    "Refused: this request came from another site. The dashboard "
+                    "only accepts writes from its own page."
+                )
+            },
+        )
+    return await call_next(request)
+
 
 def repo() -> SQLiteRepository:
     """One short-lived connection per request; SQLite dislikes sharing across threads."""
@@ -345,7 +394,12 @@ async def approve_routine(proposal_id: int) -> dict[str, Any]:
         stored = repository.get_proposal(proposal_id)
         if stored is None:
             raise HTTPException(status_code=404, detail=f"no proposal {proposal_id}")
-        if stored["status"] != "proposed":
+
+        # Claim it before the await, not after. Checking the status here and
+        # marking the row only once Hevy answered left both callers seeing
+        # `proposed` for the 1-2 s the subprocess takes, so each wrote a routine
+        # -- and Hevy has no delete endpoint to undo the second one.
+        if not repository.claim_proposal(proposal_id):
             raise HTTPException(
                 status_code=409,
                 detail=f"proposal {proposal_id} is already {stored['status']}",

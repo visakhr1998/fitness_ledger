@@ -37,8 +37,15 @@ def lift(day: date, *exercises: tuple[str, list[str]], focus: str = "") -> dict:
     }
 
 
-def run(day: date, km: float = 5.0) -> dict:
-    return {"session_date": day.isoformat(), "kind": "run", "distance_km": km}
+def run(day: date, km: float | None = None) -> dict:
+    """A running day as the agent proposes one: a date, and no distance.
+
+    `km` exists so a test can prove a model-supplied number is ignored.
+    """
+    session = {"session_date": day.isoformat(), "kind": "run"}
+    if km is not None:
+        session["distance_km"] = km
+    return session
 
 
 # --- allocation -------------------------------------------------------------
@@ -112,14 +119,38 @@ def test_the_session_ceiling_is_held():
     assert all(e.sets >= MIN_SETS_PER_EXERCISE for e in session.exercises)
 
 
-def test_runs_carry_their_distance_and_no_sets():
-    week = [lift(MON, ("a", ["chest"])), run(WED, 8.0)]
+def test_run_distance_comes_from_the_weekly_target_split_across_the_days():
+    """The same rule as set counts: the agent picks days, the engine picks numbers."""
+    week = [lift(MON, ("a", ["chest"])), run(WED), run(FRI)]
 
-    _, running = allocate(week, {"chest": 6}).sessions
+    _, first, second = allocate(
+        week, {"chest": 6}, weekly_distance_km=30.0
+    ).sessions
 
-    assert running.kind == "run"
-    assert running.distance_km == 8.0
-    assert running.exercises == ()
+    assert first.kind == "run"
+    assert first.exercises == ()
+    assert (first.distance_km, second.distance_km) == (15.0, 15.0)
+
+
+def test_a_distance_the_agent_supplied_is_ignored():
+    """It has no field for one now, but the allocator must not trust it either.
+
+    This is the guarantee sets and reps already had by shape; distance was the
+    one number that reached the stored plan straight from the model.
+    """
+    week = [run(WED, 99.0)]
+
+    (running,) = allocate(week, {}, weekly_distance_km=10.0).sessions
+
+    assert running.distance_km == 10.0
+
+
+def test_no_running_target_means_no_distance_rather_than_a_guess():
+    week = [run(WED, 99.0)]
+
+    (running,) = allocate(week, {}).sessions
+
+    assert running.distance_km is None
 
 
 # --- what the week could not do --------------------------------------------

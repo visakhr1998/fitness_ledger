@@ -509,7 +509,11 @@ def insight_report(
         secondary_weight=config.secondary_weight,
         count_warmup_sets=config.count_warmup_sets,
         week_starts_on=config.week_starts_on,
-        rep_ranges={**{k: default for k in overrides}, **overrides},
+        # Was `{**{k: default for k in overrides}, **overrides}`, which is just
+        # `overrides` -- the second unpack overwrote every key, so the default
+        # was dead and every non-overridden lift fell back to a hard-coded 6-10.
+        rep_ranges=overrides,
+        default_rep_range=default,
         runs=repo.get_runs(start, end),
         running_target=repo.get_running_target(),
         aei_series=aei_series,

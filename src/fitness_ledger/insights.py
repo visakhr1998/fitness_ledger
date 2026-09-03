@@ -66,6 +66,7 @@ def detect(
     count_warmup_sets: bool = False,
     week_starts_on: int = 0,
     rep_ranges: dict[str, RepRange] | None = None,
+    default_rep_range: RepRange | None = None,
     runs: list[Run] | None = None,
     running_target: RunningTarget | None = None,
     aei_series: list[tuple[date, float]] | None = None,
@@ -90,7 +91,9 @@ def detect(
         count_warmup_sets=count_warmup_sets,
         week_starts_on=week_starts_on,
     )
-    insights += progression_insights(sets, templates, today, rep_ranges or {})
+    insights += progression_insights(
+        sets, templates, today, rep_ranges or {}, default_rep_range
+    )
     insights += recovery_flag(sets, sleep_by_day, today)
     insights += running_shortfall(
         runs or [], running_target, today, week_starts_on=week_starts_on
@@ -217,9 +220,20 @@ def coverage_gap(
 
 
 def progression_insights(
-    sets, templates, today, rep_ranges: dict[str, RepRange]
+    sets,
+    templates,
+    today,
+    rep_ranges: dict[str, RepRange],
+    default_rep_range: RepRange | None = None,
 ) -> list[Insight]:
-    """Stalls and ready-to-progress calls on the lifts that are trained often."""
+    """Stalls and ready-to-progress calls on the lifts that are trained often.
+
+    `default_rep_range` is the configured range, applied to any lift without a
+    per-exercise override. Without it every non-overridden lift fell through to
+    `progression_state`'s own hard-coded 6-10, so a configured 8-12 was honoured
+    by the exercise screen and silently ignored here -- two views disagreeing
+    about the same lift.
+    """
     findings: list[Insight] = []
     for template_id, title in main_lifts(sets):
         template = templates.get(template_id)
@@ -227,8 +241,19 @@ def progression_insights(
             sets,
             template_id,
             title,
-            rep_range=rep_ranges.get(template_id),
+            rep_range=rep_ranges.get(template_id, default_rep_range),
             equipment_category=template.equipment_category if template else None,
+        )
+
+        # `working_weight_kg` is None for a bodyweight lift -- `progression_state`
+        # stores `top_weight or None`, and Hevy records no weight for a Pull Up.
+        # Formatting that with `:g` raised TypeError and took the whole insight
+        # pass down with it, which meant /api/insights, /api/dashboard and the
+        # coach's context all failed on one unloadable exercise.
+        at_load = (
+            f" at {state.working_weight_kg:g} kg"
+            if state.working_weight_kg is not None
+            else ""
         )
 
         if state.ready_to_progress:
@@ -239,8 +264,8 @@ def progression_insights(
                     subject=title,
                     message=(
                         f"{title}: all working sets at the top of "
-                        f"{state.rep_range.low}-{state.rep_range.high} at "
-                        f"{state.working_weight_kg:g} kg -- {state.verdict.split('--')[-1].strip()}"
+                        f"{state.rep_range.low}-{state.rep_range.high}"
+                        f"{at_load} -- {state.verdict.split('--')[-1].strip()}"
                     ),
                     detected_at=today,
                     data=state.as_dict(),
@@ -254,7 +279,7 @@ def progression_insights(
                     subject=title,
                     message=(
                         f"{title}: no load or rep increase across the last "
-                        f"{STALL_SESSIONS} sessions at {state.working_weight_kg:g} kg"
+                        f"{STALL_SESSIONS} sessions{at_load}"
                     ),
                     detected_at=today,
                     data=state.as_dict(),

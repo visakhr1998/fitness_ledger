@@ -19,7 +19,7 @@ from .models import WORKING_SET_TYPES
 from .planning import Preferences, validate
 from .progression import RepRange, progression_state, stalled
 from .queries import describe_window, get_targets, parse_window, rep_ranges
-from .volume import best_set_per_session, compute_volume, coverage
+from .volume import best_set_per_session, compute_volume, coverage, week_start
 
 MAJOR_MUSCLES = [
     "chest", "lats", "upper_back", "shoulders", "biceps", "triceps",
@@ -48,20 +48,30 @@ def bucket_size(start: date, end: date) -> str:
     return "month"
 
 
-def bucket_key(day: date, size: str) -> str:
+def bucket_key(day: date, size: str, week_starts_on: int = 0) -> str:
+    """Which bucket a day falls in.
+
+    The week case defers to `volume.week_start` rather than hard-coding Monday.
+    It used to compute `day - timedelta(days=day.weekday())`, so with
+    WEEK_STARTS_ON=6 the charts bucketed by Monday while the volume rollups,
+    insight windows and target comparison beside them bucketed by Sunday -- a
+    Sunday session appeared in a different bar than the week it was counted in.
+    """
     if size == "day":
         return day.isoformat()
     if size == "week":
-        return (day - timedelta(days=day.weekday())).isoformat()
+        return week_start(day, week_starts_on).isoformat()
     return day.replace(day=1).isoformat()
 
 
-def _bucket(rows: list[tuple[date, float]], size: str) -> list[dict[str, Any]]:
+def _bucket(
+    rows: list[tuple[date, float]], size: str, week_starts_on: int = 0
+) -> list[dict[str, Any]]:
     """Sum values into buckets, keeping empty buckets out rather than faking zeros."""
     totals: dict[str, float] = {}
     counts: dict[str, int] = {}
     for day, value in rows:
-        key = bucket_key(day, size)
+        key = bucket_key(day, size, week_starts_on)
         totals[key] = totals.get(key, 0.0) + value
         counts[key] = counts.get(key, 0) + 1
     return [
@@ -251,7 +261,7 @@ def gym_section(
     for entry in sets:
         if entry.set_type in WORKING_SET_TYPES:
             tonnage_rows.append((entry.local_date, entry.tonnage_kg))
-    buckets = _bucket(tonnage_rows, size)
+    buckets = _bucket(tonnage_rows, size, config.week_starts_on)
     mean_tonnage = round(fmean([b["total"] for b in buckets]), 1) if buckets else 0.0
 
     return {
@@ -371,8 +381,8 @@ def exercise_detail(
         },
         "progression": {**state.as_dict(), "stalled": stalled(sets, template_id)},
         "volume": {
-            "sets_per_bucket": _bucket(volume_rows, size),
-            "tonnage_per_bucket": _bucket(tonnage_rows, size),
+            "sets_per_bucket": _bucket(volume_rows, size, config.week_starts_on),
+            "tonnage_per_bucket": _bucket(tonnage_rows, size, config.week_starts_on),
             "total_sets": int(sum(value for _, value in volume_rows)),
             "total_tonnage_kg": round(sum(value for _, value in tonnage_rows), 1),
         },

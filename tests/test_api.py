@@ -370,3 +370,68 @@ def test_the_composed_question_carries_the_numbers(client):
 
 def test_progress_for_a_goal_that_does_not_exist_is_a_404(client):
     assert client.get("/api/goals/999/progress").status_code == 404
+
+
+# --- cross-site writes ------------------------------------------------------
+#
+# Every write here is bodyless or takes plain JSON, and approving a write-back
+# is irreversible because Hevy has no delete endpoint. A bodyless POST is a CORS
+# simple request, so it needs no preflight and fires even though the attacker
+# cannot read the reply.
+
+
+def test_a_write_from_another_site_is_refused(client):
+    response = client.post(
+        "/api/constraints",
+        json={"weekday": 2, "kind": "no_lifting"},
+        headers={"origin": "https://evil.example"},
+    )
+    assert response.status_code == 403
+    assert "another site" in response.json()["detail"]
+
+
+def test_the_irreversible_hevy_write_is_refused_from_another_site(client):
+    # The one that matters most: Hevy has no delete endpoint.
+    response = client.post(
+        "/api/writeback/1/approve", headers={"origin": "https://evil.example"}
+    )
+    assert response.status_code == 403
+
+
+def test_plan_and_sync_are_refused_from_another_site(client):
+    # Bodyless POSTs too, and each one spends model quota or spawns subprocesses.
+    for path in ("/api/plan", "/api/sync"):
+        assert (
+            client.post(path, headers={"origin": "https://evil.example"}).status_code
+            == 403
+        )
+
+
+def test_the_dashboard_can_still_write_from_its_own_page(client):
+    response = client.post(
+        "/api/constraints",
+        json={"weekday": 3, "kind": "no_lifting"},
+        headers={"origin": "http://localhost:8000"},
+    )
+    assert response.status_code == 200
+
+
+def test_the_vite_dev_server_origin_is_allowed(client):
+    response = client.post(
+        "/api/constraints",
+        json={"weekday": 4, "kind": "no_lifting"},
+        headers={"origin": "http://127.0.0.1:5173"},
+    )
+    assert response.status_code == 200
+
+
+def test_a_request_with_no_origin_is_allowed(client):
+    # curl, the CLI and the test client send none, and a browser cannot omit it
+    # cross-origin -- so absence is not the attack we are defending against.
+    assert client.post("/api/constraints", json={"weekday": 5, "kind": "no_lifting"}).status_code == 200
+
+
+def test_reads_are_not_blocked_by_origin(client):
+    # A cross-origin GET cannot be read without CORS headers we never send, so
+    # blocking it would only break legitimate tools.
+    assert client.get("/api/goals", headers={"origin": "https://evil.example"}).status_code == 200

@@ -947,8 +947,12 @@ class SQLiteRepository:
             (constraint.weekday, constraint.kind, constraint.reason),
         )
         self.conn.commit()
-        if cur.lastrowid:
-            return replace(constraint, id=cur.lastrowid)
+        # Always read the id back rather than trusting `cur.lastrowid`. On the
+        # DO UPDATE path SQLite leaves last_insert_rowid untouched, so it holds
+        # whatever was last inserted on this connection -- a goal, typically --
+        # and the row is truthy, so the fallback below never ran. Re-adding an
+        # existing constraint then returned an id belonging to another table's
+        # row, and deleting it 404'd or hit the wrong constraint.
         row = self.conn.execute(
             "SELECT id FROM recurring_constraints WHERE weekday = ? AND kind = ?",
             (constraint.weekday, constraint.kind),
@@ -1001,6 +1005,27 @@ class SQLiteRepository:
             "SELECT * FROM writeback_log WHERE id = ?", (proposal_id,)
         ).fetchone()
         return dict(row) if row else None
+
+    def claim_proposal(self, proposal_id: int) -> bool:
+        """Take a proposal for writing, atomically. True if this caller won it.
+
+        Hevy has no delete endpoint, so a proposal must be written at most once.
+        The approve path used to check `status == 'proposed'` and only mark the
+        row *after* awaiting the Hevy call, which left a 1-2 second window --
+        the time the stdio subprocess takes to spawn and answer -- in which two
+        requests both saw `proposed` and both created a routine.
+
+        The status guard lives in the UPDATE so SQLite decides the winner: the
+        loser gets rowcount 0 and stops before touching Hevy.
+        """
+        cur = self.conn.execute(
+            """UPDATE writeback_log
+                  SET status = 'writing', approved_at = ?
+                WHERE id = ? AND status = 'proposed'""",
+            (datetime.now(timezone.utc).isoformat(), proposal_id),
+        )
+        self.conn.commit()
+        return cur.rowcount > 0
 
     def mark_proposal(
         self, proposal_id: int, status: str, hevy_id: str | None = None, error: str | None = None

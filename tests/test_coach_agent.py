@@ -246,10 +246,20 @@ def test_merging_survives_a_planner_returning_nothing():
     assert merge_proposals(None, None) == {"sessions": [], "rationale": "", "trade_offs": ""}
 
 
-def test_merging_does_not_touch_a_distance():
+def test_merging_carries_the_day_but_not_a_distance():
+    """The merge is structural: days and focus, never a number.
+
+    A distance used to travel from the model through the merge into the stored
+    plan unchanged -- the one figure in a week that the agent supplied and the
+    assembler accepted, which the design forbids for sets, reps and weights.
+    `planning.allocate` derives it from the stored RunningTarget now.
+    """
     merged = merge_proposals(None, running_half())
 
-    assert merged["sessions"][0]["distance_km"] == 6.0
+    session = merged["sessions"][0]
+    assert session["session_date"] == "2026-08-11"
+    assert session["focus"] == "easy"
+    assert "distance_km" not in session
 
 
 # --- the trace -------------------------------------------------------------

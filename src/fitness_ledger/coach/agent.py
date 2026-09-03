@@ -99,13 +99,17 @@ class StrengthProposal(BaseModel):
 
 
 class RunSession(BaseModel):
-    """A running day. Distance comes from the weekly target, never invented."""
+    """A running day.
+
+    No distance field, deliberately -- the same reason `PlannedExercise` has no
+    set count. The weekly distance is split across these days by
+    `planning.allocate`, from the stored RunningTarget. While the model filled
+    this number in, it was the one figure in a plan that came from the model and
+    was stored unchanged, which the design forbids everywhere else.
+    """
 
     session_date: str = Field(description="YYYY-MM-DD, must be one of the training days")
     focus: str = Field(default="", description="short label, e.g. easy, long, intervals")
-    distance_km: float = Field(
-        description="kilometres, from the weekly running target split across the runs"
-    )
 
 
 class RunningProposal(BaseModel):
@@ -215,9 +219,9 @@ work around the lifting above.
 
 Rules you must not break:
 
-1. Never do arithmetic beyond splitting the weekly target distance across the
-   runs. Every other number you mention must have come from a tool result or
-   from the values above.
+1. Never do arithmetic, and never state a distance. Choose which days to run
+   on; the weekly target is split across those days after you. Every number you
+   mention must have come from a tool result or from the values above.
 
 2. If there is no running target, return no sessions at all and say so in
    rationale. Do not invent a distance -- without a target there is nothing to
@@ -319,7 +323,6 @@ def merge_proposals(
             "session_date": session.get("session_date"),
             "kind": "run",
             "focus": session.get("focus", ""),
-            "distance_km": session.get("distance_km"),
         }
         for session in running.get("sessions") or []
     ]

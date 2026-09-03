@@ -51,31 +51,37 @@ from .models import (
 # learn to route around by not mentioning it, which leaves the app knowing less
 # about the body it is planning for. The line is between an ache someone is
 # managing and a symptom nobody should be managing alone.
+# Every pattern is anchored on both sides. Without that, `numb(?:ness)?` matched
+# "number", `locking` matched "clocking" and "unlocking", and
+# `snapp?(?:ing|ed|s)` matched "snapshot" -- so "increase the number of sessions
+# per week" returned the clinician referral and created no goals. Ordinary
+# training vocabulary must never trip this, and a boundary on one pattern but
+# not the next is exactly how that happened, so the rule is uniform.
 RED_FLAG_PATTERNS = (
-    r"snapp?(?:ing|ed|s)",
+    r"\bsnapp?(?:ing|ed|s)\b",
     r"\bpop(?:s|ping|ped)\b",
-    r"tearing",
+    r"\btearing\b",
     r"\btorn\b",
     r"\btear\b",
-    r"sharp pain",
-    r"stabbing",
-    r"shooting pain",
-    r"numb(?:ness)?",
-    r"tingling",
-    r"pins and needles",
-    r"giving way",
-    r"gave way",
-    r"gave out",
-    r"can.?t bear weight",
-    r"cannot bear weight",
-    r"can.?t walk",
-    r"cannot walk",
-    r"swollen",
-    r"swelling",
-    r"locked up",
-    r"locking",
-    r"dislocat",
-    r"fracture",
+    r"\bsharp pain\b",
+    r"\bstabbing\b",
+    r"\bshooting pain\b",
+    r"\bnumb(?:ness)?\b",
+    r"\btingling\b",
+    r"\bpins and needles\b",
+    r"\bgiving way\b",
+    r"\bgave way\b",
+    r"\bgave out\b",
+    r"\bcan.?t bear weight\b",
+    r"\bcannot bear weight\b",
+    r"\bcan.?t walk\b",
+    r"\bcannot walk\b",
+    r"\bswollen\b",
+    r"\bswelling\b",
+    r"\blocked up\b",
+    r"\blocking\b",
+    r"\bdislocat\w*",
+    r"\bfractur\w*",
     r"\bbroken\b",
 )
 

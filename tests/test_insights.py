@@ -7,6 +7,7 @@ one.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import date, timedelta
 
 from fitness_ledger.insights import (
@@ -17,6 +18,7 @@ from fitness_ledger.insights import (
     volume_drop,
 )
 from fitness_ledger.models import ExerciseTemplate, SetEntry, VolumeTarget
+from fitness_ledger.progression import RepRange
 
 # A Wednesday, so "last complete week" is unambiguous.
 TODAY = date(2026, 7, 29)
@@ -205,3 +207,71 @@ def test_detect_sorts_warnings_before_info():
 def test_detect_on_empty_history_does_not_crash():
     found = detect([], TEMPLATES, TARGETS, {}, TODAY)
     assert all(i.rule == "coverage_gap" for i in found)
+
+
+# --- a lift with no load ----------------------------------------------------
+# `progression_state` stores `top_weight or None`, and Hevy records no weight
+# for a Pull Up, so the ready-to-progress and stall messages were formatting
+# None with `:g`. That raised TypeError and took the whole insight pass with it,
+# which meant /api/insights, /api/dashboard and the coach's context all failed
+# on one unloadable exercise.
+
+
+def _bodyweight_sessions(reps, weeks=6, template="PULLUP"):
+    from datetime import timedelta
+
+    sets = []
+    for week in range(weeks):
+        day = TODAY - timedelta(weeks=weeks - week)
+        sets += [
+            SetEntry("w" + str(week), day, template, "Pull Up", "normal", None, rep)
+            for rep in reps
+        ]
+    return sets
+
+
+def test_a_bodyweight_lift_ready_to_progress_does_not_crash():
+    sets = _bodyweight_sessions([10, 10, 10])
+    templates = {
+        "PULLUP": ExerciseTemplate(
+            "PULLUP", "Pull Up", "reps_only", "lats", (), "none", False
+        )
+    }
+
+    findings = progression_insights(sets, templates, TODAY, {}, RepRange(6, 10))
+
+    ready = [f for f in findings if f.rule == "progression_ready"]
+    assert ready, "a bodyweight lift at the top of its range should still be reported"
+    # The load clause is dropped rather than rendered as None, and an
+    # unloadable exercise is told to add reps rather than kilograms.
+    assert "None" not in ready[0].message
+    assert "kg" not in ready[0].message
+    assert "add reps" in ready[0].message
+
+
+def test_a_loaded_lift_still_names_its_weight():
+    sets = _bodyweight_sessions([10, 10, 10])
+    loaded = [replace(entry, weight_kg=60.0) for entry in sets]
+
+    findings = progression_insights(loaded, {}, TODAY, {}, RepRange(6, 10))
+
+    ready = [f for f in findings if f.rule == "progression_ready"]
+    assert ready and "60 kg" in ready[0].message
+
+
+def test_the_configured_rep_range_reaches_the_rules():
+    """A configured 8-12 was honoured by the exercise screen and ignored here.
+
+    `insight_report` passed `{**{k: default for k in overrides}, **overrides}`,
+    which is just `overrides`, so every non-overridden lift fell through to
+    progression_state's own hard-coded 6-10 and the two views disagreed about
+    the same lift.
+    """
+    sets = _bodyweight_sessions([10, 10, 10])
+
+    # Ten reps tops out a 6-10 range but sits mid-way through 8-12.
+    at_default = progression_insights(sets, {}, TODAY, {}, RepRange(6, 10))
+    at_configured = progression_insights(sets, {}, TODAY, {}, RepRange(8, 12))
+
+    assert [f.rule for f in at_default] == ["progression_ready"]
+    assert "progression_ready" not in [f.rule for f in at_configured]
