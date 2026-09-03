@@ -139,6 +139,11 @@ class Goal:
     status: str = "active"
     id: int | None = None  # assigned by storage
     created_at: datetime | None = None
+    # Set when this goal replaces an earlier one. Editing appends a revision
+    # rather than overwriting, following `Plan`: the coach's continuity note
+    # reads past goals, so rewriting one in place would change the recorded
+    # reason a past plan looked the way it did.
+    supersedes: int | None = None
 
     def __post_init__(self) -> None:
         # Validated here rather than at the CLI so every entry point gets it. A
@@ -183,6 +188,7 @@ class Goal:
             "target_date": self.target_date.isoformat() if self.target_date else None,
             "status": self.status,
             "created_at": self.created_at.isoformat() if self.created_at else None,
+            "supersedes": self.supersedes,
         }
 
 

@@ -131,11 +131,36 @@ type Message = { role: "user" | "assistant"; text: string };
 
 /** Collapsed to a floating affordance, as in the reference. Expands into a
  *  side panel scoped to whichever section you are looking at. */
-export function ChatDock({ section, label }: { section: string; label?: string }) {
+export function ChatDock({
+  section, label, question, onQuestionSent,
+}: {
+  section: string;
+  label?: string;
+  /** A question composed elsewhere -- the goal cards' "Am I close?". Arrives
+   *  already carrying the measured numbers, so the model explains a figure it
+   *  was given rather than deriving one. */
+  question?: string | null;
+  onQuestionSent?: () => void;
+}) {
   const [open, setOpen] = useState(false);
   const [messages, setMessages] = useState<Message[]>([]);
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
+  // The dock is slower than the intake box: `answer` loops up to six turns and
+  // each is a model request. Measured at 83s on DeepSeek for a goal question.
+  // A static "Thinking..." over that long is indistinguishable from a hang.
+  const [elapsed, setElapsed] = useState(0);
+
+  useEffect(() => {
+    if (!busy) return;
+    const started = Date.now();
+    setElapsed(0);
+    const timer = window.setInterval(
+      () => setElapsed(Math.floor((Date.now() - started) / 1000)),
+      1000,
+    );
+    return () => window.clearInterval(timer);
+  }, [busy]);
 
   const send = async () => {
     const question = draft.trim();
@@ -160,6 +185,36 @@ export function ChatDock({ section, label }: { section: string; label?: string }
       setBusy(false);
     }
   };
+
+  // One chat surface, driven from two places. A second dock for goal questions
+  // would be the `ledger sync` mistake again: two entry points to one flow.
+  useEffect(() => {
+    if (!question) return;
+    setOpen(true);
+    setMessages((prev) => [...prev, { role: "user", text: question }]);
+    setBusy(true);
+    fetch("/api/chat", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ question, section }),
+    })
+      .then((response) => response.json())
+      .then((body) =>
+        setMessages((prev) => [
+          ...prev,
+          { role: "assistant", text: body.reply ?? body.detail ?? "No answer." },
+        ]),
+      )
+      .catch((error) =>
+        setMessages((prev) => [...prev, { role: "assistant", text: `Failed: ${String(error)}` }]),
+      )
+      .finally(() => {
+        setBusy(false);
+        onQuestionSent?.();
+      });
+    // Only re-run when a new question arrives.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [question]);
 
   if (!open) {
     return (
@@ -216,7 +271,17 @@ export function ChatDock({ section, label }: { section: string; label?: string }
             {message.text}
           </div>
         ))}
-        {busy && <div style={{ color: "var(--text-muted)", fontSize: 13 }}>Thinking…</div>}
+        {busy && (
+          <div style={{ color: "var(--text-muted)", fontSize: 13 }}>
+            Thinking… {elapsed}s
+            {elapsed >= 15 && (
+              <div style={{ fontSize: 11, marginTop: 4 }}>
+                Answering can take a minute or more: each tool the model calls is
+                another request.
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       <div style={{ display: "flex", gap: 8, padding: 12, borderTop: "1px solid var(--grid)" }}>

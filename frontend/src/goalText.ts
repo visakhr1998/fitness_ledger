@@ -60,3 +60,70 @@ export function describeConstraint(constraint: {
   const weekday = WEEKDAYS[constraint.weekday] ?? "?";
   return `${weekday}s: ${label}${constraint.reason ? ` (${constraint.reason})` : ""}`;
 }
+
+
+/** Which screen a goal belongs on.
+ *
+ * Consistency sits on both: it is a fact about the training week, not about
+ * one discipline. A goal type nothing claims would silently disappear, so the
+ * default is to show it rather than hide it.
+ */
+export function goalSection(type: string): "run" | "gym" | "both" {
+  switch (type) {
+    case "race_time":
+    case "running_volume":
+    case "running_aei":
+      return "run";
+    case "strength_1rm":
+      return "gym";
+    default:
+      return "both";
+  }
+}
+
+export function goalsFor<T extends { type: string; status: string }>(
+  section: "run" | "gym",
+  goals: T[],
+): T[] {
+  return goals.filter(
+    (goal) =>
+      goal.status === "active" &&
+      (goalSection(goal.type) === section || goalSection(goal.type) === "both"),
+  );
+}
+
+/** How a status is shown.
+ *
+ * `token` colours a dot, never the text. Status colour is reserved and must
+ * never be the only signal, and `--good` measures 3.35:1 on the light surface —
+ * fine for a mark, below AA for small text. The word carries the meaning; the
+ * dot carries the glance.
+ */
+export const GOAL_STATUS: Record<string, { label: string; token: string; faded: boolean }> = {
+  active: { label: "active", token: "var(--accent-alt)", faded: false },
+  achieved: { label: "achieved", token: "var(--good)", faded: false },
+  abandoned: { label: "archived", token: "var(--text-muted)", faded: true },
+};
+
+export function statusOf(status: string) {
+  return GOAL_STATUS[status] ?? GOAL_STATUS.active;
+}
+
+/** A progress figure as something readable, or null when there is nothing to say. */
+export function describeProgress(progress: {
+  measurable?: boolean;
+  current?: number | null;
+  target?: number;
+  unit?: string;
+} | undefined): string | null {
+  if (!progress || progress.measurable === false) return null;
+  if (progress.current === null || progress.current === undefined) return null;
+  const unit = progress.unit ? ` ${progress.unit}` : "";
+  return `${progress.current}${unit} of ${progress.target}${unit}`;
+}
+
+/** Percent for a progress bar, or null when the goal cannot be measured. */
+export function percentOf(fraction: number | null | undefined): number | null {
+  if (fraction === null || fraction === undefined) return null;
+  return Math.round(fraction * 100);
+}

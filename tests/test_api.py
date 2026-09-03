@@ -282,3 +282,88 @@ def test_intake_returns_the_referral_without_calling_a_model(client):
 
 def test_empty_intake_text_is_refused(client):
     assert client.post("/api/intake", json={"text": ""}).status_code == 422
+
+
+# --- goal lifecycle and progress --------------------------------------------
+
+
+def test_editing_a_goal_archives_the_old_one_rather_than_overwriting(client):
+    """A goal is an input to past planning decisions.
+
+    The coach reads active goals when it writes a rationale, so rewriting one
+    in place would silently change the recorded reason a past week looked as it
+    did. PATCH supersedes; the original survives as `abandoned`.
+    """
+    created = client.post(
+        "/api/goals",
+        json={"type": "strength_1rm", "subject": "Bench Press", "target_value": 80},
+    ).json()
+
+    revised = client.patch(
+        f"/api/goals/{created['id']}",
+        json={"type": "strength_1rm", "subject": "Bench Press", "target_value": 100},
+    )
+    assert revised.status_code == 200
+    assert revised.json()["supersedes"] == created["id"]
+
+    everything = client.get("/api/goals?include_inactive=true").json()["goals"]
+    by_id = {goal["id"]: goal for goal in everything}
+    assert by_id[created["id"]]["status"] == "abandoned"
+    assert by_id[revised.json()["id"]]["status"] == "active"
+
+    # And the active list shows exactly one.
+    active = client.get("/api/goals").json()["goals"]
+    assert [goal["target_value"] for goal in active] == [100]
+
+
+def test_editing_a_goal_that_does_not_exist_is_a_404(client):
+    response = client.patch(
+        "/api/goals/999", json={"type": "consistency", "target_value": 4}
+    )
+    assert response.status_code == 404
+
+
+def test_an_invalid_revision_is_refused_without_archiving_the_original(client):
+    # Otherwise a typo would lose the goal and store nothing in its place.
+    created = client.post("/api/goals", json={"type": "consistency", "target_value": 4}).json()
+    bad = client.patch(f"/api/goals/{created['id']}", json={"type": "race_time", "target_value": 1})
+    assert bad.status_code == 400
+
+    still_active = client.get("/api/goals").json()["goals"]
+    assert [goal["id"] for goal in still_active] == [created["id"]]
+
+
+def test_progress_rides_along_with_the_goals_list(client):
+    # One request per screen, as `dashboard` established.
+    created = client.post("/api/goals", json={"type": "consistency", "target_value": 4}).json()
+    body = client.get("/api/goals").json()
+    assert str(created["id"]) in body["progress"]
+    assert body["progress"][str(created["id"])]["type"] == "consistency"
+
+
+def test_a_race_goal_reports_that_it_cannot_be_measured_yet(client):
+    """Not guessed. Predicting a race time needs a pace model that does not
+    exist here, and an invented figure on a goal card would be believed."""
+    created = client.post(
+        "/api/goals",
+        json={"type": "race_time", "subject": "5k", "target_value": 1320},
+    ).json()
+
+    progress = client.get(f"/api/goals/{created['id']}/progress").json()
+    assert progress["measurable"] is False
+    # None, not 0 -- "no data" and "no progress" are different answers.
+    assert progress["current"] is None
+    assert progress["fraction"] is None
+
+
+def test_the_composed_question_carries_the_numbers(client):
+    """The model explains a figure it was given rather than deriving one."""
+    created = client.post("/api/goals", json={"type": "consistency", "target_value": 4}).json()
+    body = client.get(f"/api/goals/{created['id']}/progress").json()
+
+    assert "4 sessions a week" in body["question"]
+    assert "rather than recomputing" in body["question"]
+
+
+def test_progress_for_a_goal_that_does_not_exist_is_a_404(client):
+    assert client.get("/api/goals/999/progress").status_code == 404

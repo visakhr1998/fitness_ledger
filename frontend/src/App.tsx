@@ -18,6 +18,8 @@ export function App() {
   const [section, setSection] = useState<Section>("home");
   const [range, setRange] = useState<Range>({ window: "last-90-days" });
   const [reloadKey, setReloadKey] = useState(0);
+  // A question composed by a goal card, on its way to the one chat dock.
+  const [question, setQuestion] = useState<string | null>(null);
 
   const reload = useCallback(() => setReloadKey((value) => value + 1), []);
 
@@ -42,8 +44,12 @@ export function App() {
 
       <main className="stack">
         {section === "home" && <HomeScreen reloadKey={reloadKey} />}
-        {section === "run" && <RunScreen range={range} reloadKey={reloadKey} />}
-        {section === "gym" && <GymScreen range={range} reloadKey={reloadKey} />}
+        {section === "run" && (
+          <RunScreen range={range} reloadKey={reloadKey} onAsk={setQuestion} />
+        )}
+        {section === "gym" && (
+          <GymScreen range={range} reloadKey={reloadKey} onAsk={setQuestion} />
+        )}
         {section === "week" && <WeekScreen reloadKey={reloadKey} />}
 
         {/* Below the screen but scoped to it: the rules that apply to lifting
@@ -58,7 +64,12 @@ export function App() {
 
       {/* The dock reads cached training data whichever screen you are on, so it
           stays on Goals — only its heading needs a word that reads as English. */}
-      <ChatDock section={section} label={section === "home" ? "training" : section} />
+      <ChatDock
+        section={section}
+        label={section === "home" ? "training" : section}
+        question={question}
+        onQuestionSent={() => setQuestion(null)}
+      />
     </div>
   );
 }

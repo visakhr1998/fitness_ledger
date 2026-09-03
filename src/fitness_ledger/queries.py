@@ -15,7 +15,7 @@ from typing import Any
 from .config import Config
 from .db import SQLiteRepository
 from .insights import detect
-from .models import WORKING_SET_TYPES, Plan, VolumeTarget
+from .models import WORKING_SET_TYPES, Goal, Plan, VolumeTarget
 from .planning import Adherence, Preferences, adherence
 from .progression import RepRange, main_lifts, progression_state, stalled
 from .volume import (
@@ -574,3 +574,131 @@ def _format_pace(seconds_per_km: float | None) -> str | None:
         return None
     minutes, seconds = divmod(int(round(seconds_per_km)), 60)
     return f"{minutes}:{seconds:02d}/km"
+
+
+# --- how close is a goal ----------------------------------------------------
+
+
+def goal_progress(repo: SQLiteRepository, config: Config, goal: Goal) -> dict[str, Any]:
+    """Where a goal stands, computed here and never by a model.
+
+    The chat dock explains this number; it does not derive it. That is the same
+    division `chat.py` already enforces -- the model picks a tool and phrases
+    what comes back -- and it is why the figure can also be shown on the goal
+    card without a model request at all.
+
+    Every branch returns the same shape so the caller never has to know which
+    kind of goal it is holding. `current` is None when the goal cannot be
+    measured yet rather than 0, because "no data" and "no progress" are
+    different answers and a progress bar would show them identically.
+    """
+    measured = {
+        "goal_id": goal.id,
+        "type": goal.type,
+        "subject": goal.subject,
+        "target": goal.target_value,
+        "current": None,
+        "fraction": None,
+        "unit": "",
+        "window": "",
+        "detail": "",
+        "measurable": True,
+    }
+
+    if goal.type == "strength_1rm" and goal.subject:
+        report = exercise_progress(repo, config, goal.subject, weeks=12)
+        if report.get("error"):
+            return {**measured, "measurable": False, "detail": report["error"]}
+        sessions = report.get("sessions") or []
+        current = sessions[-1]["estimated_1rm_kg"] if sessions else None
+        return {
+            **measured,
+            "subject": report["exercise"],
+            "current": current,
+            "fraction": _fraction(current, goal.target_value),
+            "unit": "kg",
+            "window": report["window"],
+            "detail": (
+                f"estimated 1RM from {len(sessions)} sessions, "
+                f"{report['change_kg']:+g} kg over the window"
+                if sessions
+                else "nothing logged for this lift in the last 12 weeks"
+            ),
+        }
+
+    if goal.type == "running_volume":
+        report = run_log(repo, config, "last-week")
+        return {
+            **measured,
+            "current": report["total_km"],
+            "fraction": _fraction(report["total_km"], goal.target_value),
+            "unit": "km",
+            "window": report["window"],
+            "detail": f"{report['count']} runs last week",
+        }
+
+    if goal.type == "running_aei":
+        start, end = parse_window("last-12-weeks", week_starts_on=config.week_starts_on)
+        # Reliable runs only, for the reason the insight rules use the same
+        # filter: an excluded run already says why on the Run screen and should
+        # not also move a goal.
+        series = [
+            row["aei"]
+            for row in repo.get_run_metrics(start, end)
+            if row["reliable"] and row["aei"] is not None
+        ]
+        current = round(series[-1], 3) if series else None
+        return {
+            **measured,
+            "current": current,
+            "fraction": _fraction(current, goal.target_value),
+            "unit": "m/beat",
+            "window": describe_window(start, end),
+            "detail": (
+                f"latest of {len(series)} reliable runs"
+                if series
+                else "no reliable runs in the window"
+            ),
+        }
+
+    if goal.type == "consistency":
+        start, end = parse_window("last-4-weeks", week_starts_on=config.week_starts_on)
+        workouts = repo.get_workouts(start, end)
+        weeks = max(((end - start).days) // 7, 1)
+        current = round(len(workouts) / weeks, 1)
+        return {
+            **measured,
+            "current": current,
+            "fraction": _fraction(current, goal.target_value),
+            "unit": "sessions/week",
+            "window": describe_window(start, end),
+            "detail": f"{len(workouts)} sessions over {weeks} weeks",
+        }
+
+    if goal.type == "race_time":
+        # Deliberately not guessed. Turning training data into a predicted race
+        # time needs VDOT, which does not exist here yet, and an invented
+        # figure on a goal card would be believed.
+        return {
+            **measured,
+            "measurable": False,
+            "unit": "s",
+            "detail": (
+                "Predicting a race time needs a pace model, which this app does "
+                "not have yet. Logged runs are on the Run screen."
+            ),
+        }
+
+    return {**measured, "measurable": False, "detail": "no measure for this goal type"}
+
+
+def _fraction(current: float | None, target: float) -> float | None:
+    """How far along, clamped to [0, 1]. None when there is nothing to compare.
+
+    Higher-is-better throughout, which is true of every measurable goal type
+    here. A race time is lower-is-better and is exactly the type reported as
+    not measurable, so this does not silently invert one.
+    """
+    if current is None or not target:
+        return None
+    return round(max(0.0, min(current / target, 1.0)), 3)
