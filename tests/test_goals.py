@@ -266,3 +266,26 @@ def test_a_constraint_can_be_deleted_unlike_a_goal(repo):
     assert repo.delete_constraint(stored.id) is True
     assert repo.get_constraints() == []
     assert repo.delete_constraint(stored.id) is False
+
+
+def test_re_adding_a_constraint_returns_that_constraint_s_id(repo):
+    """`lastrowid` is not the row you just upserted.
+
+    On the DO UPDATE path SQLite leaves last_insert_rowid alone, so it held
+    whatever was last inserted on the connection -- a goal, typically. Re-adding
+    an existing constraint then returned an id belonging to another table, and
+    deleting it 404'd or hit the wrong constraint.
+    """
+    first = repo.add_constraint(RecurringConstraint(weekday=2, kind="no_high_impact"))
+
+    # Anything at all inserted in between is enough to break the old code.
+    for _ in range(3):
+        repo.add_goal(Goal(type="consistency", target_value=4))
+
+    again = repo.add_constraint(
+        RecurringConstraint(weekday=2, kind="no_high_impact", reason="still")
+    )
+
+    assert again.id == first.id
+    assert [c.id for c in repo.get_constraints()] == [first.id]
+    assert repo.delete_constraint(again.id) is True

@@ -116,12 +116,16 @@ def _openai_compatible_model(config: Config):
 def is_quota_error(exc: BaseException) -> bool:
     """Whether a failure is the provider refusing, rather than a real fault.
 
-    Matched on the message because each SDK wraps it differently: ADK raises
-    _ResourceExhaustedError, LiteLLM its own, and a bare httpx call gives you a
-    status. The one thing they all carry is the 429 and the phrase.
+    Delegates to `llm.is_quota_refusal` rather than keeping a second matcher.
+    The two were independent and had already drifted -- this one knew
+    RESOURCE_EXHAUSTED and the dock's did not -- so the coach and the chat dock
+    could disagree about whether the same exception was a quota problem. This is
+    the more expensive disagreement of the two: a false positive here launches a
+    paid fallback run.
     """
-    text = str(exc)
-    return "RESOURCE_EXHAUSTED" in text or "429" in text or "quota" in text.lower()
+    from .. import llm
+
+    return llm.is_quota_refusal(exc)
 
 
 def fallback_model(config: Config):

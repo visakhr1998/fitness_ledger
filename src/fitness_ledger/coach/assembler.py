@@ -78,11 +78,17 @@ def assemble(
     prefs = planning_preferences(repo)
 
     ledger = result.get("ledger_state") or {}
+    # The weekly running distance comes from the stored target, the same way
+    # set counts come from the volume target. The agent picks the days.
+    running_target = repo.get_running_target()
     allocation = allocate(
         with_targets(proposal.get("sessions") or [], result.get("exercise_pool")),
         weekly_targets(ledger),
         prefs,
         deficits=deficits(ledger),
+        weekly_distance_km=(
+            running_target.distance_km_per_week if running_target else None
+        ),
     )
     problems = validate(
         allocation.sessions,

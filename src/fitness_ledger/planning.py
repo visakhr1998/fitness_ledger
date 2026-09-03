@@ -84,6 +84,7 @@ def allocate(
     preferences: Preferences | None = None,
     *,
     deficits: dict[str, float] | None = None,
+    weekly_distance_km: float | None = None,
 ) -> Allocation:
     """Compute set counts for a proposed week.
 
@@ -137,7 +138,9 @@ def allocate(
         for key, muscles in _muscles_by_exercise(lift_sessions).items()
     }
 
-    sessions, delivered = _build_sessions(proposal_sessions, share, prefs, priority)
+    sessions, delivered = _build_sessions(
+        proposal_sessions, share, prefs, priority, weekly_distance_km
+    )
 
     # Reporting stays in deficit terms. "Still short 4 sets of what you missed"
     # is actionable; "short of a full target you were never going to hit in one
@@ -176,12 +179,26 @@ def _build_sessions(
     share: dict[tuple[int, int], float],
     prefs: Preferences,
     priority: dict[tuple[int, int], float] | None = None,
+    weekly_distance_km: float | None = None,
 ) -> tuple[list[PlannedSession], dict[str, float]]:
     """Round shares into whole sets, hold the per-session ceiling, and report
     how much volume each muscle actually receives."""
     delivered: dict[str, float] = {}
     built: list[PlannedSession] = []
     lift_index = -1
+
+    # The weekly distance, split evenly across the running days the agent chose.
+    # Even, because weighting a "long" run against an "easy" one is coaching
+    # judgement this app does not encode yet -- and an even split from the
+    # stored target is still a number the rules engine owns, which the agent's
+    # own figure was not. None when no target is set, which is also what the
+    # running planner is told to treat as "no runs to place".
+    run_days = sum(1 for s in proposal_sessions if s.get("kind") == "run")
+    run_distance = (
+        round(weekly_distance_km / run_days, 2)
+        if weekly_distance_km and run_days
+        else None
+    )
 
     for session in proposal_sessions:
         kind = "run" if session.get("kind") == "run" else "lift"
@@ -193,7 +210,7 @@ def _build_sessions(
                     local_date=day,
                     kind="run",
                     focus=session.get("focus", ""),
-                    distance_km=session.get("distance_km"),
+                    distance_km=run_distance,
                 )
             )
             continue
