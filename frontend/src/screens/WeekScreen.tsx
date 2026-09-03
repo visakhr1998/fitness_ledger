@@ -11,7 +11,7 @@
  * surface as every other write.
  */
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 import {
   api,
   type AvailabilitySection,
@@ -61,10 +61,135 @@ const BUTTON: React.CSSProperties = {
  *  extra is a setup problem, and telling someone their plan failed when they
  *  never installed the planner sends them debugging the wrong thing.
  */
+function SubHeading({ children }: { children: ReactNode }) {
+  return (
+    <h3
+      style={{
+        fontSize: 12, fontWeight: 600, color: "var(--text-secondary)",
+        margin: "18px 0 6px", textTransform: "uppercase", letterSpacing: 0.4,
+      }}
+    >
+      {children}
+    </h3>
+  );
+}
+
+/** Why the week looks as it does, in two halves.
+ *
+ * The model's rationale was already here, which makes a plan read as an
+ * assertion: a paragraph claiming a shape, with nothing to check it against.
+ * The numbers were never the model's to choose -- `planning.allocate` computes
+ * every set count from the weekly target, and `WeekProposal` has nowhere to put
+ * one -- so the deterministic half is the part that makes the plan auditable.
+ *
+ * The rules come from the backend rather than being written out again here. A
+ * hand-maintained "24 sets" in the UI is the API-table mistake, which was wrong
+ * in three parameter names within a week of being written.
+ *
+ * Collapsed by default: this is the answer to "why", asked after reading the
+ * week, not before.
+ */
+function WhyThisWeek({
+  plan, rules,
+}: {
+  plan: NonNullable<PlanSection["plan"]>;
+  rules: PlanSection["rules"];
+}) {
+  const [open, setOpen] = useState(false);
+  const trace = plan.agent_trace ?? [];
+
+  return (
+    <Card title="Why this week">
+      <p style={{ margin: 0, fontSize: 14, color: "var(--text-primary)", lineHeight: 1.55 }}>
+        {plan.rationale || "No rationale recorded."}
+      </p>
+
+      {plan.trade_offs && (
+        <>
+          {/* Its own block, not a sentence inside the rationale: when the week
+              is squeezed something loses, and it should be readable at a glance. */}
+          <SubHeading>What it gave up</SubHeading>
+          <p style={{ margin: 0, fontSize: 14, color: "var(--text-secondary)", lineHeight: 1.55 }}>
+            {plan.trade_offs}
+          </p>
+        </>
+      )}
+
+      <button
+        onClick={() => setOpen((on) => !on)}
+        aria-expanded={open}
+        style={{
+          marginTop: 16, border: "1px solid var(--border)", background: "transparent",
+          color: "var(--text-secondary)", borderRadius: "var(--radius-control)",
+          padding: "5px 12px", fontSize: 12, cursor: "pointer",
+        }}
+      >
+        {open ? "Hide how this was built" : "How this was built"}
+      </button>
+
+      {open && (
+        <div style={{ marginTop: 4 }}>
+          <SubHeading>What the model chose</SubHeading>
+          <p style={{ margin: 0, fontSize: 13, color: "var(--text-secondary)", lineHeight: 1.55 }}>
+            Which exercises, and which days. Nothing else — it has nowhere in its
+            schema to put a set count, a weight or a rep.
+          </p>
+          <p style={{ margin: "8px 0 0", fontSize: 13, color: "var(--text-muted)", lineHeight: 1.55 }}>
+            {trace.length === 0
+              ? "It looked nothing up: the deficit, your goals, the available days and the exercise pool were all handed to it. An empty trace is the expected shape here, not a failure."
+              : `It looked up: ${trace.map((step) => step.tool ?? "?").join(", ")}.`}
+          </p>
+
+          <SubHeading>What it could not choose</SubHeading>
+          <p style={{ margin: 0, fontSize: 13, color: "var(--text-secondary)", lineHeight: 1.55 }}>
+            Every set count came from {rules?.set_counts_from ?? "your weekly volume target"}.
+          </p>
+          {rules && (
+            <ul style={{ margin: "8px 0 0", paddingLeft: 20, fontSize: 13, color: "var(--text-secondary)", display: "grid", gap: 4 }}>
+              <li>
+                {rules.limits.min_sets_per_exercise}–{rules.limits.max_sets_per_exercise} sets
+                per exercise, at most {rules.limits.max_sets_per_session} in a session
+              </li>
+              <li>
+                at least {rules.limits.min_rest_days_same_muscle} rest{" "}
+                {rules.limits.min_rest_days_same_muscle === 1 ? "day" : "days"} between
+                sessions training the same muscle
+              </li>
+              <li>
+                {rules.limits.allow_run_after_leg_day
+                  ? "runs may follow a leg day"
+                  : "no run the day after a leg session"}
+              </li>
+            </ul>
+          )}
+
+          {rules && (
+            <>
+              <SubHeading>What loses when the week is tight</SubHeading>
+              <ol style={{ margin: 0, paddingLeft: 20, fontSize: 13, color: "var(--text-secondary)", display: "grid", gap: 4 }}>
+                {rules.priority_order.map((item) => (
+                  <li key={item}>{item}</li>
+                ))}
+              </ol>
+              <p style={{ margin: "8px 0 0", fontSize: 12, color: "var(--text-muted)" }}>
+                Protected top-first: the later items are given up before the earlier ones.
+              </p>
+            </>
+          )}
+        </div>
+      )}
+    </Card>
+  );
+}
+
 function GenerateControl({ onDone, label }: { onDone: () => void; label: string }) {
   const [status, setStatus] = useState<PlanStatus | null>(null);
   const [polling, setPolling] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Generation is roughly three model requests and has been measured from tens
+  // of seconds to well over a minute. A button that only says "Planning…" is
+  // indistinguishable from one that has stopped.
+  const [elapsed, setElapsed] = useState(0);
 
   useEffect(() => {
     if (!polling) return;
@@ -80,6 +205,17 @@ function GenerateControl({ onDone, label }: { onDone: () => void; label: string 
   }, [polling, onDone]);
 
   const running = status?.status === "running" || polling;
+
+  useEffect(() => {
+    if (!running) return;
+    const started = Date.now();
+    setElapsed(0);
+    const timer = window.setInterval(
+      () => setElapsed(Math.floor((Date.now() - started) / 1000)),
+      1000,
+    );
+    return () => window.clearInterval(timer);
+  }, [running]);
 
   const start = async () => {
     setError(null);
@@ -106,13 +242,17 @@ function GenerateControl({ onDone, label }: { onDone: () => void; label: string 
 
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+      {/* Disabled rather than hidden while running, with the reason in the
+          label: a control that disappears reads as a bug. */}
       <button onClick={start} disabled={running} style={{ ...BUTTON, color: running ? "var(--text-muted)" : "var(--text-primary)" }}>
-        {running ? "Planning…" : label}
+        {running ? `Planning… ${elapsed}s` : label}
       </button>
 
       {running && (
         <span role="status" style={{ fontSize: 12, color: "var(--text-muted)" }}>
-          three model requests, usually under a minute
+          {elapsed >= 45
+            ? "Still going. Three model requests, and response times vary a lot."
+            : "three model requests, usually under a minute"}
         </span>
       )}
 
@@ -260,16 +400,20 @@ export function WeekScreen({ reloadKey }: { reloadKey: number }) {
               <button
                 onClick={() => act(async () => { await api.decidePlan(plan.id!, "approved"); reload(); })}
                 disabled={busy}
-                style={{ ...BUTTON, background: "var(--accent)", color: "#04121a", fontWeight: 600, border: "none" }}
+                style={{ ...BUTTON, background: "var(--good)", color: "#04121a", fontWeight: 600, border: "none" }}
               >
-                Accept this week
+                {busy ? "Accepting…" : "Accept this week"}
               </button>
               <button
                 onClick={() => act(async () => { await api.decidePlan(plan.id!, "rejected"); reload(); })}
                 disabled={busy}
-                style={{ ...BUTTON, color: "var(--text-secondary)" }}
+                // The border carries the destructive signal; the label stays in
+                // a text token. --critical measures 3.44:1 on the dark surface,
+                // which is fine for a 1px edge and below AA for a 13px word --
+                // and "Reject" is unambiguous without being coloured.
+                style={{ ...BUTTON, color: "var(--text-secondary)", borderColor: "var(--critical)" }}
               >
-                Reject
+                {busy ? "Rejecting…" : "Reject"}
               </button>
             </>
           )}
@@ -435,23 +579,7 @@ export function WeekScreen({ reloadKey }: { reloadKey: number }) {
         )}
       </Card>
 
-      <Card title="Why this week">
-        <p style={{ margin: 0, fontSize: 14, color: "var(--text-primary)", lineHeight: 1.55 }}>
-          {plan.rationale || "No rationale recorded."}
-        </p>
-        {plan.trade_offs && (
-          <>
-            {/* Its own block, not a sentence inside the rationale: when the week
-                is squeezed something loses, and it should be readable at a glance. */}
-            <h3 style={{ fontSize: 12, fontWeight: 600, color: "var(--text-secondary)", margin: "16px 0 6px", textTransform: "uppercase", letterSpacing: 0.4 }}>
-              What it gave up
-            </h3>
-            <p style={{ margin: 0, fontSize: 14, color: "var(--text-secondary)", lineHeight: 1.55 }}>
-              {plan.trade_offs}
-            </p>
-          </>
-        )}
-      </Card>
+      <WhyThisWeek plan={plan} rules={data.rules} />
 
       {problems.length > 0 && (
         /* Shown beside the plan rather than instead of it: a week that breaks a
