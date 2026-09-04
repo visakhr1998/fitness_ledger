@@ -99,6 +99,19 @@ class Config:
     llm_timeout_seconds: float = 30.0
     llm_max_retries: int = 1
 
+    # The same bound for the coach, which reaches its provider through ADK and
+    # LiteLLM rather than through `llm.py` -- so `llm._limits` never touched it
+    # and a planning request was left on LiteLLM's 600-second default. That is
+    # the omission `_limits` says it exists to prevent; the coach was simply a
+    # third transport nobody counted.
+    #
+    # Larger than the dock's 30s on purpose, not by guesswork: a planning
+    # request carries the whole exercise pool (~3.4k characters on real data)
+    # plus a structured output schema, and a full generation is roughly three
+    # of them -- the Week tab's own control starts apologising at 45 seconds.
+    # 30 here would cut short requests that were going to succeed.
+    coach_timeout_seconds: float = 120.0
+
     # A second provider for the coach only, used when the first refuses.
     # Planning is the one place a quota error is fatal rather than annoying:
     # the dock can say "ask again in a minute", but a week that will not
@@ -147,6 +160,7 @@ class Config:
             llm_reasoning_effort=os.environ.get("LLM_REASONING_EFFORT") or None,
             llm_timeout_seconds=float(os.environ.get("LLM_TIMEOUT_SECONDS", "30")),
             llm_max_retries=int(os.environ.get("LLM_MAX_RETRIES", "1")),
+            coach_timeout_seconds=float(os.environ.get("COACH_TIMEOUT_SECONDS", "120")),
         )
 
 

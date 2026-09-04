@@ -14,6 +14,7 @@ are turned into a stated instruction rather than a traceback.
 from __future__ import annotations
 
 import os
+from typing import Any
 
 from ..config import Config
 
@@ -110,7 +111,31 @@ def _openai_compatible_model(config: Config):
         model=f"openai/{config.llm_model}",
         api_base=config.llm_base_url.rstrip("/"),
         api_key=config.llm_api_key,
+        **_limits(config),
     )
+
+
+def _limits(config: Config) -> dict[str, Any]:
+    """How long a planning request may take, and how often to ask again.
+
+    The coach is a third transport. `llm._limits` bounds the dock's two and
+    says it is kept in one place "so a provider cannot be left unbounded by
+    omission" -- but it is never reached from here, because ADK talks to
+    everything non-Gemini through LiteLLM. So every plan ran on LiteLLM's
+    600-second default with no cap on retries.
+
+    Found by watching an eval pass sit at zero CPU for 45 seconds, 42 minutes
+    into a run that takes twenty. A stalled connection was indistinguishable
+    from a slow model, which is the same confusion PR #34 removed from the
+    dock and the intake box.
+
+    `0` means "use the SDK default", the same escape hatch `llm._limits` has,
+    for a local model that is legitimately slow.
+    """
+    limits: dict[str, Any] = {"num_retries": max(config.llm_max_retries, 0)}
+    if config.coach_timeout_seconds > 0:
+        limits["timeout"] = config.coach_timeout_seconds
+    return limits
 
 
 def is_quota_error(exc: BaseException) -> bool:
@@ -157,4 +182,5 @@ def fallback_model(config: Config):
         model=f"openai/{config.coach_fallback_model}",
         api_base=config.coach_fallback_base_url.rstrip("/"),
         api_key=config.coach_fallback_api_key,
+        **_limits(config),
     )

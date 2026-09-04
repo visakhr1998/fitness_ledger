@@ -208,6 +208,50 @@ def test_a_configured_fallback_resolves():
     )
 
 
+def test_every_coach_transport_is_bounded():
+    """Neither LiteLLM model may be built without a timeout and a retry cap.
+
+    `llm._limits` exists so "a provider cannot be left unbounded by omission",
+    and the coach was that omission: it reaches its provider through ADK, never
+    through `llm.py`, so both models ran on LiteLLM's 600-second default.
+    Found by watching an eval pass hold at zero CPU for 45 seconds, 42 minutes
+    into a twenty-minute run.
+
+    Asserted over both constructors together, so a third one added later is
+    caught by the same test rather than needing someone to remember.
+    """
+    pytest.importorskip("litellm", reason="coach extra not installed")
+    from dataclasses import replace
+
+    from fitness_ledger.coach import _openai_compatible_model, fallback_model
+
+    cfg = replace(
+        fallback_config(),
+        llm_provider="openai-compatible",
+        llm_base_url="https://api.deepseek.com",
+        llm_model="deepseek-v4-flash",
+        llm_api_key="not-a-real-key",
+        coach_timeout_seconds=90.0,
+        llm_max_retries=2,
+    )
+
+    for build in (_openai_compatible_model, fallback_model):
+        args = build(cfg)._additional_args
+        assert args.get("timeout") == 90.0, build.__name__
+        assert args.get("num_retries") == 2, build.__name__
+
+
+def test_a_zero_timeout_hands_back_to_the_sdk_default():
+    """The escape hatch `llm._limits` has, for a local model that is
+    legitimately slow -- Ollama on CPU can take minutes."""
+    pytest.importorskip("litellm", reason="coach extra not installed")
+    from dataclasses import replace
+
+    from fitness_ledger.coach import _limits
+
+    assert "timeout" not in _limits(replace(fallback_config(), coach_timeout_seconds=0))
+
+
 def test_only_a_quota_refusal_triggers_the_fallback():
     """A malformed proposal is a real fault. Retrying it elsewhere would hide
     the cause behind a second bill."""

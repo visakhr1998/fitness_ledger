@@ -32,6 +32,9 @@ Three things worth knowing:
   6.4s. `LLM_TIMEOUT_SECONDS` (default 30) caps the wait and `LLM_MAX_RETRIES`
   (default 1) asks again, because a slow draw is usually followed by a fast one.
   Set the timeout to `0` for a local model that is legitimately slow.
+  The planner has its own `COACH_TIMEOUT_SECONDS` (default 120): it reaches the
+  provider through ADK rather than the dock's client, so the setting above does
+  not apply to it, and a planning request is larger than a chat turn.
 - **Free tiers usually cost you data instead.** Outside the EEA, UK and
   Switzerland, Google may use free-tier prompts to improve their products,
   including human review. The chat box sends your questions along with your
