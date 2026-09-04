@@ -190,7 +190,7 @@ Two rules, both learned the hard way:
 ## Working here
 
 ```bash
-./.venv/Scripts/python.exe -m pytest              # 503 tests (492 without the coach extra)
+./.venv/Scripts/python.exe -m pytest              # 562 tests (coach tests skip without the extra)
 cd frontend && npm run build                      # required after any frontend change
 ./.venv/Scripts/python.exe -m fitness_ledger.cli doctor
 ./.venv/Scripts/python.exe -m fitness_ledger.cli sync
@@ -250,6 +250,13 @@ OpenRouter. Only a quota refusal triggers it; a malformed proposal is a real
 fault and retrying it elsewhere would hide the cause behind a second bill. The
 result carries `planned_by`, so a week produced by the backstop is never silent.
 
+**One matcher decides what a quota error is.** `llm.is_quota_refusal` reads
+`status_code` first and only falls back to anchored text; `coach.is_quota_error`
+delegates to it. They used to be independent and had already drifted, so the
+dock and the coach could disagree about the same exception — and the coach's
+false positives cost money, because a quota verdict launches the paid fallback
+run. A bare `"429"` matched inside a request id was enough (#47).
+
 **Coach evals run about monthly.** No free model has both the quality to plan
 and the quota to sustain a full pass (~54 requests). If they need to run more
 often, the answer is a paid provider -- DeepSeek is costed at roughly $0.0015
@@ -283,6 +290,22 @@ per plan in `UNDERSTANDING.md` -- and never a looser assertion.
   ledger state change and must never write; only the per-day step does, and
   `tests/test_plan_api.py` asserts the plan decision never reaches
   `build_routine`.
+
+  Two more guards, both from the 2026-09-03 review, both easy to remove by
+  accident:
+
+  - **A proposal is claimed before the Hevy call, not after** (#41).
+    `claim_proposal` puts the status check inside the `UPDATE` so SQLite picks
+    the winner; the old check-then-`await` left the 1-2s the subprocess takes as
+    a window where two callers each wrote a routine. A process killed mid-write
+    leaves the row `writing` and not retryable, which is the safer of the two
+    failures when there is no undo.
+  - **Writes carrying a foreign `Origin` are refused** (#40). Every write here
+    is bodyless or plain JSON, so it is a CORS *simple request*: no preflight,
+    and the side effect fires even though the caller cannot read the reply. Any
+    page the user had open could walk `/api/writeback/{id}/approve` over
+    sequential ids. A missing `Origin` stays allowed on purpose — curl, the CLI
+    and the tests send none, and a browser cannot omit it cross-origin.
 - **The `drift` insight rule is unblocked but not written.** It compares logged
   sessions against *planned* ones, which needed `Plan` and `Availability` to
   exist. Both now do, so the blocker is gone — the rule itself is still to do,
@@ -295,11 +318,17 @@ per plan in `UNDERSTANDING.md` -- and never a looser assertion.
   extra** (`pip install -e ".[coach]"`), so nothing else depends on it: ADK
   declares 25 direct dependencies and resolves to roughly 118 packages. The
   dashboard must keep working without it.
-- **The agent never emits a set count.** It chooses exercises and days;
-  `planning.py` computes every number from the tool-reported deficit. This is
-  enforced by shape, not by instruction — `WeekProposal` has nowhere to put a
-  set count, rep count or weight. Do not add one, and do not let the assembler
-  accept a number the agent supplied.
+- **The agent never emits a number — sets, reps, weights or distances.** It
+  chooses exercises and days; `planning.py` computes the rest from the
+  tool-reported deficit and the stored `RunningTarget`. Enforced by shape, not
+  by instruction: `WeekProposal` and `RunSession` have nowhere to put one. Do
+  not add a field, and do not let the assembler accept a number the agent
+  supplied.
+
+  `RunSession.distance_km` was the exception until 2026-09-03 — a required
+  field the model filled, copied into the stored plan unchanged. A review found
+  it (#48). If a future planner needs to express *intent* about a session, give
+  it a label like `focus`, never a figure.
 - **The chat dock needs *a* model provider, not a specific one.** Gemini's free
   tier is the default; `ollama` runs it locally. Without any provider the dock
   says so; the rest of the dashboard must never depend on one.
