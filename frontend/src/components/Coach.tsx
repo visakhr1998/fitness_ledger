@@ -130,10 +130,16 @@ export function CoachStrip({ section, reloadKey }: { section: string; reloadKey:
 type Message = { role: "user" | "assistant"; text: string };
 
 /** Collapsed to a floating affordance, as in the reference. Expands into a
- *  side panel scoped to whichever section you are looking at. */
+ *  side panel.
+ *
+ *  Deliberately *not* scoped to the section, though it used to say it was and
+ *  to post a `section` the server accepted and never read. The dock holds the
+ *  same tools whichever tab is open, so a scope in the request would have been
+ *  a promise nothing kept. The prop survives as the fallback for `label`. */
 export function ChatDock({
   section, label, question, onQuestionSent,
 }: {
+  /** Only names the placeholder -- "Ask about your run" -- when no `label`. */
   section: string;
   label?: string;
   /** A question composed elsewhere -- the goal cards' "Am I close?". Arrives
@@ -172,7 +178,7 @@ export function ChatDock({
       const response = await fetch("/api/chat", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ question, section }),
+        body: JSON.stringify({ question }),
       });
       const body = await response.json();
       setMessages((prev) => [
@@ -196,7 +202,7 @@ export function ChatDock({
     fetch("/api/chat", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ question, section }),
+      body: JSON.stringify({ question }),
     })
       .then((response) => response.json())
       .then((body) =>
