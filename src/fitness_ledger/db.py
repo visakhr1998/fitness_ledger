@@ -463,10 +463,6 @@ class SQLiteRepository:
     def count_workouts(self) -> int:
         return self.conn.execute("SELECT COUNT(*) FROM workouts").fetchone()[0]
 
-    def latest_workout_start(self) -> str | None:
-        row = self.conn.execute("SELECT MAX(start_time) FROM workouts").fetchone()
-        return row[0] if row else None
-
     # --- runs and health ---------------------------------------------------
 
     def upsert_runs(self, runs: Iterable[dict]) -> int:

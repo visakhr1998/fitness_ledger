@@ -382,7 +382,9 @@ def test_the_strength_planner_cannot_recompute_the_deficit(bound):
     names = {getattr(t, "__name__", getattr(getattr(t, "func", None), "__name__", "")) for t in strength.tools}
     assert names == {"get_progression_state"}
     assert "get_volume_vs_target" not in names
-    assert "get_neglected" not in names
+    # `get_neglected` was removed from the catalog outright on 2026-09-04 --
+    # no agent held it and `gather_context` never called it -- so asserting
+    # its absence here would now pass whatever the tool list did.
     # get_exercise_pool went the same way on 2026-09-02. While it existed, the
     # pool reached the planner only if the model chose to ask -- Gemini asked,
     # DeepSeek did not, and the same code produced a usable week on one

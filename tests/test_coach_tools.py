@@ -120,7 +120,6 @@ def test_adk_builds_a_schema_with_the_expected_parameters(tools):
 
     expected = {
         "get_volume_vs_target": {"window"},
-        "get_neglected": {"window", "limit"},
         "get_exercise_pool": {"muscle_group", "logged_only"},
         "get_recent_runs": {"window"},
         "get_recovery_signals": {"window"},
@@ -151,7 +150,6 @@ def test_the_tool_list_is_stable(bound):
     repo, config = bound
     assert tool_names(repo, config) == [
         "get_volume_vs_target",
-        "get_neglected",
         "get_progression_state",
         "get_exercise_pool",
         "get_recent_runs",
