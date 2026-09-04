@@ -473,10 +473,9 @@ class Plan:
     def total_sets(self) -> int:
         return sum(session.total_sets for session in self.sessions)
 
-    @property
-    def lift_sessions(self) -> tuple[PlannedSession, ...]:
-        return tuple(s for s in self.sessions if s.kind == "lift")
-
+    # There was a `lift_sessions` mirror of this. Removed 2026-09-04 with no
+    # caller anywhere; `run_sessions` has two, in the eval suite. Restore the
+    # pair only when something needs it -- symmetry is not a caller.
     @property
     def run_sessions(self) -> tuple[PlannedSession, ...]:
         return tuple(s for s in self.sessions if s.kind == "run")

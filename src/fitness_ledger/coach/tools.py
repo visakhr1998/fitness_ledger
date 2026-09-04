@@ -67,18 +67,6 @@ def build_tools(repo: SQLiteRepository, config: Config) -> list[Callable[..., An
             ],
         }
 
-    def get_neglected(window: str = "last-week", limit: int = 5) -> list[dict[str, Any]]:
-        """Muscle groups furthest below target, worst first.
-
-        A shortcut for the common case; the same numbers as
-        get_volume_vs_target, already filtered and sorted.
-
-        Args:
-            window: as get_volume_vs_target.
-            limit: how many to return.
-        """
-        return queries.neglected(repo, config, window, limit)
-
     def get_progression_state() -> list[dict[str, Any]]:
         """Per lift: the working weight, and whether it is ready to go up.
 
@@ -118,7 +106,11 @@ def build_tools(repo: SQLiteRepository, config: Config) -> list[Callable[..., An
                 "title": row["title"],
                 "primary_muscle_group": row["primary_muscle_group"],
                 "secondary_muscle_groups": list(row["secondary_muscle_groups"] or ()),
-                "equipment": row.get("equipment_category"),
+                # `exercise_catalog` emits "equipment"; reading
+                # "equipment_category" -- this repo's own name for the column --
+                # silently yielded None for every row. Exactly the mismatch
+                # PR #35 fixed one file over in `sync.py`.
+                "equipment": row.get("equipment"),
                 "logged_sets": row.get("logged_sets", 0),
             }
             for row in pool[:MAX_POOL]
@@ -244,7 +236,6 @@ def build_tools(repo: SQLiteRepository, config: Config) -> list[Callable[..., An
 
     return [
         get_volume_vs_target,
-        get_neglected,
         get_progression_state,
         get_exercise_pool,
         get_recent_runs,

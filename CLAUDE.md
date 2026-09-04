@@ -51,7 +51,7 @@ CLI ─┐
      ├─► queries.py ──► volume.py · progression.py · insights.py · aei.py
 API ─┘        │              (rules engine: pure, tested, no I/O)
               ▼
-          db.py (Repository interface ─► SQLite)
+          db.py (SQLiteRepository ─► SQLite)
               ▲
           sync.py ──► mcp_client.py ──► Hevy MCP · Google Health MCP
 
@@ -72,9 +72,14 @@ API ─┘        │              (rules engine: pure, tested, no I/O)
   the routine. Do not add a third.
 - **The API is a thin wrapper over `queries.py`.** No computation in `api.py`, so
   the API and CLI can never disagree about a number.
-- **A repository interface sits between the engine and SQLite** so the v0.4 move
-  to a persistent backend stays contained. Don't write code that assumes a local
-  file path.
+- **All storage lives in `db.py`** so the v0.4 move to a persistent backend
+  stays contained. Don't write code that assumes a local file path. There was a
+  `Repository` typing protocol here as well; it was deleted 2026-09-04 because
+  nothing annotated against it, so it had quietly drifted to 27 methods against
+  `SQLiteRepository`'s 82 -- a second list to keep in agreement, which is the
+  shape `sync_all` exists to avoid. `cli`, `queries` and `sections` also reach
+  into `repo.conn` and run SQL, so no interface described the real boundary.
+  Add one back when a second implementation exists to conform to it.
 
 ## Conventions that are values, not laws
 
@@ -190,7 +195,7 @@ Two rules, both learned the hard way:
 ## Working here
 
 ```bash
-./.venv/Scripts/python.exe -m pytest              # 562 tests (coach tests skip without the extra)
+./.venv/Scripts/python.exe -m pytest              # 563 tests (coach tests skip without the extra)
 cd frontend && npm run build                      # required after any frontend change
 ./.venv/Scripts/python.exe -m fitness_ledger.cli doctor
 ./.venv/Scripts/python.exe -m fitness_ledger.cli sync

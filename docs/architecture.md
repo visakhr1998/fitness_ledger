@@ -5,7 +5,7 @@ CLI ─┐
      ├─► queries.py ──► volume.py · progression.py · insights.py · aei.py
 API ─┘        │              (rules engine: plain Python, no I/O)
               ▼
-          db.py (repository interface ─► SQLite)
+          db.py (SQLiteRepository ─► SQLite)
               ▲
           sync.py ──► mcp_client.py ──► Hevy MCP · Google Health MCP
 
@@ -17,8 +17,8 @@ Four rules keep this shape:
 
 - **The rules engine takes and returns plain data.** No database, no network, no
   model, so every number is testable on its own.
-- **A repository interface sits between the engine and SQLite,** so swapping
-  storage later stays contained.
+- **All storage lives in `db.py`,** so swapping it later stays contained. No
+  code elsewhere opens a connection or builds a database path.
 - **The model never does maths.** It picks a function to call and describes what
   comes back — which is why the provider is swappable. `planning.py` works out
   every set count and has no I/O, so it sits with the rules engine rather than in
@@ -29,7 +29,7 @@ Four rules keep this shape:
 
 The API is a thin wrapper over `queries.py` for anything that reports a number,
 so the API and CLI can't disagree about a figure. Endpoints that manage state —
-goals, plans, availability, write-back — use the repository directly. The live
+goals, plans, availability, write-back — use `SQLiteRepository` directly. The live
 endpoint list is at `/docs` while the server is running; there is no copy of it
 here, because a hand-maintained one was wrong within a week.
 

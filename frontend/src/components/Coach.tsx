@@ -6,7 +6,8 @@
  */
 
 import { useEffect, useState } from "react";
-import { api, type Insight, type InsightReport } from "../api";
+import { api, readable, type Insight, type InsightReport } from "../api";
+import { useElapsedSeconds } from "../hooks";
 import { CoachMascot } from "./ExerciseIcon";
 
 const RULE_LABELS: Record<string, string> = {
@@ -130,10 +131,16 @@ export function CoachStrip({ section, reloadKey }: { section: string; reloadKey:
 type Message = { role: "user" | "assistant"; text: string };
 
 /** Collapsed to a floating affordance, as in the reference. Expands into a
- *  side panel scoped to whichever section you are looking at. */
+ *  side panel.
+ *
+ *  Deliberately *not* scoped to the section, though it used to say it was and
+ *  to post a `section` the server accepted and never read. The dock holds the
+ *  same tools whichever tab is open, so a scope in the request would have been
+ *  a promise nothing kept. The prop survives as the fallback for `label`. */
 export function ChatDock({
   section, label, question, onQuestionSent,
 }: {
+  /** Only names the placeholder -- "Ask about your run" -- when no `label`. */
   section: string;
   label?: string;
   /** A question composed elsewhere -- the goal cards' "Am I close?". Arrives
@@ -149,18 +156,7 @@ export function ChatDock({
   // The dock is slower than the intake box: `answer` loops up to six turns and
   // each is a model request. Measured at 83s on DeepSeek for a goal question.
   // A static "Thinking..." over that long is indistinguishable from a hang.
-  const [elapsed, setElapsed] = useState(0);
-
-  useEffect(() => {
-    if (!busy) return;
-    const started = Date.now();
-    setElapsed(0);
-    const timer = window.setInterval(
-      () => setElapsed(Math.floor((Date.now() - started) / 1000)),
-      1000,
-    );
-    return () => window.clearInterval(timer);
-  }, [busy]);
+  const elapsed = useElapsedSeconds(busy);
 
   const send = async () => {
     const question = draft.trim();
@@ -172,7 +168,7 @@ export function ChatDock({
       const response = await fetch("/api/chat", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ question, section }),
+        body: JSON.stringify({ question }),
       });
       const body = await response.json();
       setMessages((prev) => [
@@ -180,7 +176,7 @@ export function ChatDock({
         { role: "assistant", text: body.reply ?? body.detail ?? "No answer." },
       ]);
     } catch (error) {
-      setMessages((prev) => [...prev, { role: "assistant", text: `Failed: ${String(error)}` }]);
+      setMessages((prev) => [...prev, { role: "assistant", text: `Failed: ${readable(error)}` }]);
     } finally {
       setBusy(false);
     }
@@ -196,7 +192,7 @@ export function ChatDock({
     fetch("/api/chat", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ question, section }),
+      body: JSON.stringify({ question }),
     })
       .then((response) => response.json())
       .then((body) =>
@@ -206,7 +202,7 @@ export function ChatDock({
         ]),
       )
       .catch((error) =>
-        setMessages((prev) => [...prev, { role: "assistant", text: `Failed: ${String(error)}` }]),
+        setMessages((prev) => [...prev, { role: "assistant", text: `Failed: ${readable(error)}` }]),
       )
       .finally(() => {
         setBusy(false);
