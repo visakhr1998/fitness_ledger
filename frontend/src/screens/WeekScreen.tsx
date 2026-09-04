@@ -14,11 +14,13 @@
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import {
   api,
+  readable,
   type AvailabilitySection,
   type PlanSection,
   type PlanStatus,
   type RoutineProposal,
 } from "../api";
+import { useElapsedSeconds } from "../hooks";
 import { Card, fmt } from "../charts/primitives";
 import { MetricCard } from "../components/shell";
 import { RoutineDiff, WrittenNote } from "../components/RoutineDiff";
@@ -189,7 +191,7 @@ function GenerateControl({ onDone, label }: { onDone: () => void; label: string 
   // Generation is roughly three model requests and has been measured from tens
   // of seconds to well over a minute. A button that only says "Planning…" is
   // indistinguishable from one that has stopped.
-  const [elapsed, setElapsed] = useState(0);
+  const elapsed = useElapsedSeconds(status?.status === "running" || polling);
 
   useEffect(() => {
     if (!polling) return;
@@ -206,17 +208,6 @@ function GenerateControl({ onDone, label }: { onDone: () => void; label: string 
 
   const running = status?.status === "running" || polling;
 
-  useEffect(() => {
-    if (!running) return;
-    const started = Date.now();
-    setElapsed(0);
-    const timer = window.setInterval(
-      () => setElapsed(Math.floor((Date.now() - started) / 1000)),
-      1000,
-    );
-    return () => window.clearInterval(timer);
-  }, [running]);
-
   const start = async () => {
     setError(null);
     try {
@@ -228,7 +219,7 @@ function GenerateControl({ onDone, label }: { onDone: () => void; label: string 
       setStatus({ status: "running", week: null, plan_id: null, error: null });
       setPolling(true);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(readable(err));
     }
   };
 
@@ -301,7 +292,7 @@ export function WeekScreen({ reloadKey }: { reloadKey: number }) {
             .catch(() => undefined);
         }
       })
-      .catch((err) => !cancelled && setError(err.message));
+      .catch((err) => !cancelled && setError(readable(err)));
     return () => {
       cancelled = true;
     };

@@ -6,7 +6,8 @@
  */
 
 import { useEffect, useState } from "react";
-import { api, type Insight, type InsightReport } from "../api";
+import { api, readable, type Insight, type InsightReport } from "../api";
+import { useElapsedSeconds } from "../hooks";
 import { CoachMascot } from "./ExerciseIcon";
 
 const RULE_LABELS: Record<string, string> = {
@@ -155,18 +156,7 @@ export function ChatDock({
   // The dock is slower than the intake box: `answer` loops up to six turns and
   // each is a model request. Measured at 83s on DeepSeek for a goal question.
   // A static "Thinking..." over that long is indistinguishable from a hang.
-  const [elapsed, setElapsed] = useState(0);
-
-  useEffect(() => {
-    if (!busy) return;
-    const started = Date.now();
-    setElapsed(0);
-    const timer = window.setInterval(
-      () => setElapsed(Math.floor((Date.now() - started) / 1000)),
-      1000,
-    );
-    return () => window.clearInterval(timer);
-  }, [busy]);
+  const elapsed = useElapsedSeconds(busy);
 
   const send = async () => {
     const question = draft.trim();
@@ -186,7 +176,7 @@ export function ChatDock({
         { role: "assistant", text: body.reply ?? body.detail ?? "No answer." },
       ]);
     } catch (error) {
-      setMessages((prev) => [...prev, { role: "assistant", text: `Failed: ${String(error)}` }]);
+      setMessages((prev) => [...prev, { role: "assistant", text: `Failed: ${readable(error)}` }]);
     } finally {
       setBusy(false);
     }
@@ -212,7 +202,7 @@ export function ChatDock({
         ]),
       )
       .catch((error) =>
-        setMessages((prev) => [...prev, { role: "assistant", text: `Failed: ${String(error)}` }]),
+        setMessages((prev) => [...prev, { role: "assistant", text: `Failed: ${readable(error)}` }]),
       )
       .finally(() => {
         setBusy(false);

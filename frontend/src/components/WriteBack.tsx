@@ -6,7 +6,7 @@
  */
 
 import { useState } from "react";
-import { api, type ExerciseSummary, type RoutineProposal } from "../api";
+import { api, readable, type ExerciseSummary, type RoutineProposal } from "../api";
 import { Card } from "../charts/primitives";
 import { ExerciseIcon } from "./ExerciseIcon";
 import { RoutineDiff, WrittenNote } from "./RoutineDiff";
@@ -36,7 +36,7 @@ export function WriteBack({ catalog }: { catalog: ExerciseSummary[] }) {
       if (!response.ok) throw new Error(body.detail ?? "could not build a proposal");
       setProposal(body);
     } catch (err) {
-      setError(String(err instanceof Error ? err.message : err));
+      setError(readable(err));
     } finally {
       setBusy(false);
     }
@@ -50,7 +50,7 @@ export function WriteBack({ catalog }: { catalog: ExerciseSummary[] }) {
       setWritten(await api.approveRoutine(proposal.id));
       setProposal(null);
     } catch (err) {
-      setError(String(err instanceof Error ? err.message : err));
+      setError(readable(err));
     } finally {
       setBusy(false);
     }

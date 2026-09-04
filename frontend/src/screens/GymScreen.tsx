@@ -217,6 +217,11 @@ function ExerciseExplorer({ catalog, range }: { catalog: ExerciseSummary[]; rang
 }
 
 function ExerciseDetailPanel({ detail }: { detail: ExerciseDetail }) {
+  // Every chart in this repo ships a table twin; these two were the exceptions.
+  // The panel does not use `Card`, which is what carries the toggle elsewhere,
+  // so each caption row grows one instead.
+  const [oneRepTable, setOneRepTable] = useState(false);
+  const [setsTable, setSetsTable] = useState(false);
   const points: Point[] = detail.one_rep_max.points.map((point) => ({
     label: point.date,
     value: point.estimated_1rm_kg,
@@ -274,15 +279,33 @@ function ExerciseDetailPanel({ detail }: { detail: ExerciseDetail }) {
       </div>
 
       <div>
-        <div style={{ fontSize: 13, color: "var(--text-secondary)", marginBottom: 4 }}>
-          Estimated 1RM · {detail.window}
+        <div style={ChartHeading}>
+          <span style={{ fontSize: 13, color: "var(--text-secondary)" }}>
+            Estimated 1RM · {detail.window}
+          </span>
+          <TableTwin
+            open={oneRepTable}
+            onToggle={() => setOneRepTable((value) => !value)}
+            headers={["Date", "Est. 1RM kg", "Top set"]}
+            rows={detail.one_rep_max.points.map((point) => [
+              point.date, fmt(point.estimated_1rm_kg, 1), `${fmt(point.weight_kg, 1)} kg × ${point.reps}`,
+            ])}
+          />
         </div>
         <LineChart points={points} unit="kg" height={200} yLabel="Estimated one-rep max" />
       </div>
 
       <div>
-        <div style={{ fontSize: 13, color: "var(--text-secondary)", marginBottom: 4 }}>
-          Working sets per {detail.bucket}
+        <div style={ChartHeading}>
+          <span style={{ fontSize: 13, color: "var(--text-secondary)" }}>
+            Working sets per {detail.bucket}
+          </span>
+          <TableTwin
+            open={setsTable}
+            onToggle={() => setSetsTable((value) => !value)}
+            headers={["Period", "Working sets"]}
+            rows={detail.volume.sets_per_bucket.map((bucket) => [bucket.bucket, bucket.total])}
+          />
         </div>
         <Columns
           points={detail.volume.sets_per_bucket.map((bucket) => ({
@@ -296,6 +319,16 @@ function ExerciseDetailPanel({ detail }: { detail: ExerciseDetail }) {
     </div>
   );
 }
+
+/** Caption on the left, table toggle on the right -- what `Card`'s `action`
+ *  slot does for the charts that sit in one. */
+const ChartHeading = {
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "space-between",
+  gap: 10,
+  marginBottom: 4,
+} as const;
 
 function Stat({ label, value, tone }: { label: string; value: string; tone?: string }) {
   return (
