@@ -118,6 +118,66 @@ def test_red_flags_fire_on_symptoms_that_need_a_clinician(text):
     assert intake.red_flags(text) != []
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        # give way / give out, every inflection of both particles
+        "my knee gives way when I squat",
+        "my knee give way under load",
+        "my knee giving way on the stairs",
+        "my knee gave way on the stairs",
+        "my knee gives out when I squat",
+        "my knee giving out under load",
+        "my knee gave out on the stairs",
+        # swell, every inflection plus the irregular participle
+        "my knee swells up after squats",
+        "my knee swelled after squats",
+        "there is swelling in my knee",
+        "my ankle is swollen",
+        # the same class, found by auditing the rest of the list
+        "my knee locks up mid-rep",
+        "my knee locked up mid-rep",
+        "my foot tingles after long runs",
+        "tingling in my foot after long runs",
+        "I heard a pop in my shoulder",
+        "I felt a snap in my hamstring",
+    ],
+)
+def test_every_inflection_of_a_red_flag_fires(text):
+    """The bug this file exists to prevent a repeat of.
+
+    A UAT pass on 2026-09-04 walked through two entries: "gives way" and
+    "swells" matched nothing, so the text reached the model and came back as
+    something to plan around. The list held "giving way"/"gave way" and
+    "swollen"/"swelling", and the test above uses exactly those forms -- which
+    is why it passed while the guard was open.
+
+    Parameterised over the whole family rather than one form each, because a
+    guard that only catches the phrasing its author thought of is not a
+    deterministic guard.
+    """
+    assert intake.red_flags(text) != [], f"red flag missed: {text!r}"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # A personal record, not an injury. This is why "broke" is deliberately
+        # not a red flag beside "broken" -- see the note in intake.py.
+        "I broke my bench PR last week",
+        "broke through a plateau on squats",
+        # Ordinary soreness the user is managing, not a symptom to refer on.
+        "I get sore knees after long runs",
+        "my knee hurts on Wednesdays",
+        "legs are always tight the day after",
+    ],
+)
+def test_training_vocabulary_does_not_trip_the_guard(text):
+    """The cost of widening the patterns is false positives, and a referral
+    fired at someone celebrating a PR teaches them to stop using the box."""
+    assert intake.red_flags(text) == [], f"false positive: {text!r}"
+
+
 def test_the_referral_does_not_read_as_medical_instruction():
     # It declines to plan and points elsewhere. It must not diagnose or
     # prescribe on the way past.

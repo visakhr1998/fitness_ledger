@@ -57,9 +57,19 @@ from .models import (
 # per week" returned the clinician referral and created no goals. Ordinary
 # training vocabulary must never trip this, and a boundary on one pattern but
 # not the next is exactly how that happened, so the rule is uniform.
+# Every entry covers the whole inflected family of the phrase it names, not
+# only the form whoever added it happened to write. Two entries did not, and a
+# UAT pass walked straight through both: "my knee gives way" and "my knee
+# swells up" matched nothing, so the text went to the model and came back as
+# something to plan around. The list held "giving way"/"gave way" and
+# "swollen"/"swelling" -- which are the forms the tests happened to use, which
+# is why the tests passed.
+#
+# So: verbs carry their inflections, and the bare noun is included where people
+# actually report a symptom that way ("I heard a pop", "felt a snap").
 RED_FLAG_PATTERNS = (
-    r"\bsnapp?(?:ing|ed|s)\b",
-    r"\bpop(?:s|ping|ped)\b",
+    r"\bsnap(?:s|ped|ping)?\b",
+    r"\bpop(?:s|ped|ping)?\b",
     r"\btearing\b",
     r"\btorn\b",
     r"\btear\b",
@@ -67,23 +77,34 @@ RED_FLAG_PATTERNS = (
     r"\bstabbing\b",
     r"\bshooting pain\b",
     r"\bnumb(?:ness)?\b",
-    r"\btingling\b",
+    r"\btingl(?:e|es|ing)\b",
     r"\bpins and needles\b",
-    r"\bgiving way\b",
-    r"\bgave way\b",
-    r"\bgave out\b",
+    r"\b(?:giv(?:e|es|ing)|gave) (?:way|out)\b",
     r"\bcan.?t bear weight\b",
     r"\bcannot bear weight\b",
     r"\bcan.?t walk\b",
     r"\bcannot walk\b",
     r"\bswollen\b",
-    r"\bswelling\b",
-    r"\blocked up\b",
+    r"\bswell(?:s|ed|ing)?\b",
+    r"\block(?:s|ed|ing)? up\b",
     r"\blocking\b",
     r"\bdislocat\w*",
     r"\bfractur\w*",
     r"\bbroken\b",
 )
+
+# Two gaps left open deliberately, because widening them costs more than it
+# buys:
+#
+# "broke" is not added beside "broken". In a training log "I broke my bench PR"
+# is a celebration, and answering that with a referral to a doctor is a worse
+# failure than missing "I broke my wrist" -- whose commoner phrasing, "broken
+# wrist", the existing entry already catches.
+#
+# The `tear` family is left as it stands, bare `\btear\b` included, even though
+# it fires on "wear and tear". Narrowing it would trade a false positive for a
+# possible false negative on a real tear, and that is the wrong direction for a
+# guard whose whole job is to be over-cautious.
 
 # Returned verbatim when a red flag fires. A constant rather than model output
 # because this is the one reply whose wording must not vary: it is the app
