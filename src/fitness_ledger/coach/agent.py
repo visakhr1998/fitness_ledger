@@ -458,6 +458,9 @@ async def propose_week(
     Only a quota refusal triggers it. A malformed proposal or a missing tool is
     a real fault, and retrying it on another provider would hide the cause
     behind a second bill.
+
+    Separately, an *unusable* answer is asked again on the same provider. See
+    `_ask_until_usable`.
     """
     require_adk()
 
@@ -465,15 +468,71 @@ async def propose_week(
         # Pinned: no fallback. Used to grade one provider at a time, where a
         # silent switch mid-suite would blend two models into one score that
         # describes neither.
-        return await _run_coach(repo, config, week_start, model=model)
+        return await _ask_until_usable(repo, config, week_start, model=model)
 
     try:
-        return await _run_coach(repo, config, week_start)
+        return await _ask_until_usable(repo, config, week_start)
     except Exception as exc:  # noqa: BLE001 - re-raised unless quota + fallback
         backstop = fallback_model(config) if is_quota_error(exc) else None
         if backstop is None:
             raise
-        return await _run_coach(repo, config, week_start, model=backstop, on_fallback=exc)
+        return await _ask_until_usable(
+            repo, config, week_start, model=backstop, on_fallback=exc
+        )
+
+
+def _has_week(result: dict[str, Any]) -> bool:
+    """Whether a proposal contains a week at all.
+
+    Deliberately the weakest possible test -- does it name any session. Judging
+    plan *quality* here would put an opinion about good training inside the
+    retry loop, and the point is only to tell an answer from a non-answer.
+    """
+    return bool((result.get("proposal") or {}).get("sessions"))
+
+
+async def _ask_until_usable(
+    repo: SQLiteRepository,
+    config: Config,
+    week_start: date | None = None,
+    model: Any = None,
+    on_fallback: BaseException | None = None,
+) -> dict[str, Any]:
+    """Ask for a week until one comes back, up to `coach_max_plan_attempts`.
+
+    The pipeline used to keep whatever the first call returned. Measured
+    2026-09-04 on `back_neglected`, the same prompt nine times to
+    deepseek-v4-flash-0731: about six answers were a usable week -- zero
+    invented ids, zero missing ids -- and three were an empty response with no
+    tool call and no text. So one week in three was being stored as a plan with
+    nothing in it, and it read as a model that cannot plan rather than one that
+    intermittently returns nothing.
+
+    Retrying is the right shape *because* the failure is all-or-nothing and
+    cheap to detect. It is not a way to shop for a better plan: the test is
+    only whether a week came back, so a thin week is kept and a missing one is
+    asked again.
+
+    A week with no training days is left alone -- then an empty proposal is the
+    correct answer and asking again would spend money to be told so twice.
+    """
+    attempts = max(config.coach_max_plan_attempts, 1)
+    result: dict[str, Any] = {}
+
+    for attempt in range(1, attempts + 1):
+        result = await _run_coach(
+            repo, config, week_start, model=model, on_fallback=on_fallback
+        )
+        result["attempts"] = attempt
+        if _has_week(result) or not result.get("training_days"):
+            return result
+
+    # Out of attempts. Returned rather than raised, so the caller still gets the
+    # week_start, the ledger state and `attempts` -- a raise would discard the
+    # record of how hard we tried, and an empty week is a result worth showing
+    # next to the reason, the same way `assemble` hands back its problems
+    # alongside the plan rather than instead of it.
+    return result
 
 
 async def _run_coach(
