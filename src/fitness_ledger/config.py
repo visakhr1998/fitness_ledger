@@ -99,6 +99,23 @@ class Config:
     llm_timeout_seconds: float = 30.0
     llm_max_retries: int = 1
 
+    # How many times to ask for a week before giving up.
+    #
+    # Measured 2026-09-04, deepseek-v4-flash-0731 on `back_neglected`, the same
+    # prompt nine times: roughly six answers were a usable week and three were
+    # an empty response -- no tool call, no text. When it succeeded the plan was
+    # good, with zero invented and zero missing template ids; the failure is
+    # reliability, not judgement.
+    #
+    # The pipeline used to accept whichever answer arrived, so a one-in-three
+    # empty draw became a stored empty week. At p(usable) ~= 0.6, three attempts
+    # is ~94% and four is ~97%; each costs about 110 seconds on this model,
+    # which is why the default is not higher.
+    #
+    # Only an unusable proposal is retried. A schema violation or a missing tool
+    # is a real fault and asking again just bills twice for the same bug.
+    coach_max_plan_attempts: int = 3
+
     # A second provider for the coach only, used when the first refuses.
     # Planning is the one place a quota error is fatal rather than annoying:
     # the dock can say "ask again in a minute", but a week that will not
@@ -147,6 +164,7 @@ class Config:
             llm_reasoning_effort=os.environ.get("LLM_REASONING_EFFORT") or None,
             llm_timeout_seconds=float(os.environ.get("LLM_TIMEOUT_SECONDS", "30")),
             llm_max_retries=int(os.environ.get("LLM_MAX_RETRIES", "1")),
+            coach_max_plan_attempts=int(os.environ.get("COACH_MAX_PLAN_ATTEMPTS", "3")),
         )
 
 
