@@ -195,6 +195,19 @@ def test_the_filter_matches_secondary_muscles_too(tools):
     assert "Bench Press" in [row["title"] for row in tools["get_exercise_pool"]("triceps")]
 
 
+def test_the_pool_carries_the_equipment_it_claims_to(tools):
+    """The key the catalog emits, not this repo's name for the column.
+
+    `exercise_catalog` returns "equipment"; the wrapper read
+    "equipment_category" and so handed the agent None for every exercise --
+    the same key mismatch PR #35 fixed in `sync.py`. Asserted against the
+    value, because a `.get()` on the wrong key fails by returning None rather
+    than by raising.
+    """
+    bench = next(row for row in tools["get_exercise_pool"]() if row["title"] == "Bench Press")
+    assert bench["equipment"] == "barbell"
+
+
 def test_the_pool_defaults_to_exercises_actually_trained(tools):
     titles = [row["title"] for row in tools["get_exercise_pool"]()]
     assert "Sled Push" not in titles  # in the catalog, never logged
