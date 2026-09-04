@@ -120,7 +120,6 @@ def test_adk_builds_a_schema_with_the_expected_parameters(tools):
 
     expected = {
         "get_volume_vs_target": {"window"},
-        "get_neglected": {"window", "limit"},
         "get_exercise_pool": {"muscle_group", "logged_only"},
         "get_recent_runs": {"window"},
         "get_recovery_signals": {"window"},
@@ -151,7 +150,6 @@ def test_the_tool_list_is_stable(bound):
     repo, config = bound
     assert tool_names(repo, config) == [
         "get_volume_vs_target",
-        "get_neglected",
         "get_progression_state",
         "get_exercise_pool",
         "get_recent_runs",
@@ -193,6 +191,19 @@ def test_the_filter_matches_secondary_muscles_too(tools):
     # Bench trains triceps as a secondary; a coach filling a triceps deficit
     # should see it.
     assert "Bench Press" in [row["title"] for row in tools["get_exercise_pool"]("triceps")]
+
+
+def test_the_pool_carries_the_equipment_it_claims_to(tools):
+    """The key the catalog emits, not this repo's name for the column.
+
+    `exercise_catalog` returns "equipment"; the wrapper read
+    "equipment_category" and so handed the agent None for every exercise --
+    the same key mismatch PR #35 fixed in `sync.py`. Asserted against the
+    value, because a `.get()` on the wrong key fails by returning None rather
+    than by raising.
+    """
+    bench = next(row for row in tools["get_exercise_pool"]() if row["title"] == "Bench Press")
+    assert bench["equipment"] == "barbell"
 
 
 def test_the_pool_defaults_to_exercises_actually_trained(tools):

@@ -329,6 +329,25 @@ function qs(range: Range): string {
   return text ? `?${text}` : "";
 }
 
+/** A thrown fetch error, as something a person can act on.
+ *
+ * `fetch` rejects with a bare `TypeError` when it cannot reach the host at
+ * all, which renders as "Failed to fetch" — true, and useless: the server
+ * being stopped is the commonest cause and the message never says so. This
+ * lived privately in `HomeScreen`, so the intake box explained itself and the
+ * chat dock, the Week tab and write-back all showed the raw string.
+ *
+ * An aborted request returns "" because the user caused it and there is
+ * nothing to report.
+ */
+export function readable(exc: unknown): string {
+  if (exc instanceof DOMException && exc.name === "AbortError") return "";
+  if (exc instanceof TypeError) {
+    return "Could not reach the server. Is it running? (ledger serve)";
+  }
+  return exc instanceof Error ? exc.message : String(exc);
+}
+
 async function get<T>(path: string): Promise<T> {
   const response = await fetch(path);
   if (!response.ok) {

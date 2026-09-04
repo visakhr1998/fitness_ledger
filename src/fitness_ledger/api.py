@@ -593,6 +593,10 @@ def propose_plan_routine(plan_id: int, request: SessionRoutine) -> dict[str, Any
 def get_goals(include_inactive: bool = Query(False)) -> dict[str, Any]:
     with repo() as repository:
         target = repository.get_running_target()
+        # Read once. The goals and the progress map were each fetching their
+        # own copy, so every request paid for two identical queries and the
+        # two halves could in principle disagree about which goals exist.
+        goals = repository.get_goals(include_inactive=include_inactive)
         return {
             "goals": [
                 {
@@ -603,7 +607,7 @@ def get_goals(include_inactive: bool = Query(False)) -> dict[str, Any]:
                     "target_date": goal.target_date.isoformat() if goal.target_date else None,
                     "status": goal.status,
                 }
-                for goal in repository.get_goals(include_inactive=include_inactive)
+                for goal in goals
             ],
             "running_target": target.as_dict() if target else None,
             # Constraints ship with goals rather than earning a round trip:
@@ -613,9 +617,16 @@ def get_goals(include_inactive: bool = Query(False)) -> dict[str, Any]:
             # Computed here rather than fetched per card: there are only ever a
             # handful of goals, and `dashboard` set the precedent of one request
             # per screen.
+            #
+            # Still one `goal_progress` per goal, archived ones included, and a
+            # strength goal costs three queries plus a `SequenceMatcher` pass
+            # over the ~461 exercise titles. Deliberately left: the home screen
+            # asks with `include_inactive=true` and renders a figure on every
+            # card, so skipping the inactive ones is a visible change, not a
+            # cleanup. Fix it by caching the title match, not by dropping rows.
             "progress": {
                 str(goal.id): queries.goal_progress(repository, _config, goal)
-                for goal in repository.get_goals(include_inactive=include_inactive)
+                for goal in goals
                 if goal.id is not None
             },
         }
@@ -862,7 +873,10 @@ def clear_availability(day: str) -> dict[str, Any]:
 
 class ChatRequest(BaseModel):
     question: str
-    section: str = "run"
+    # No `section`. One was accepted here and never read: the dock's tools are
+    # the same whichever tab is open, and the section only ever labelled the
+    # placeholder text on the client. An unread request field reads as scope
+    # the handler honours and does not.
 
 
 @app.post("/api/chat")

@@ -18,12 +18,14 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   api,
+  readable,
   type Goal,
   type GoalProgress,
   type GoalsSection,
   type IntakeProposal,
   type RecurringConstraint,
 } from "../api";
+import { useElapsedSeconds } from "../hooks";
 import { Card } from "../charts/primitives";
 import {
   describeConstraint,
@@ -47,36 +49,17 @@ const chipStyle = {
 /** A fetch that never reached the server throws a bare TypeError whose message
  *  is "Failed to fetch" — true, and useless. The overwhelmingly likely cause is
  *  that the backend is not running, so say that instead. */
-function readable(exc: unknown): string {
-  if (exc instanceof DOMException && exc.name === "AbortError") return "";
-  if (exc instanceof TypeError) {
-    return "Could not reach the server. Is it running? (ledger serve)";
-  }
-  return exc instanceof Error ? exc.message : String(exc);
-}
-
 /** The messy-input box and whatever it produced. */
 function Intake({ onSaved }: { onSaved: () => void }) {
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [proposal, setProposal] = useState<IntakeProposal | null>(null);
-  // Seconds spent waiting. The model takes roughly 8-20s and occasionally far
-  // longer, which behind a static "Reading…" is indistinguishable from a hang —
-  // that is exactly how a stopped server was first reported as a bug.
-  const [elapsed, setElapsed] = useState(0);
+  // The model takes roughly 8-20s and occasionally far longer, which behind a
+  // static "Reading…" is indistinguishable from a hang — that is exactly how a
+  // stopped server was first reported as a bug.
+  const elapsed = useElapsedSeconds(busy);
   const pending = useRef<AbortController | null>(null);
-
-  useEffect(() => {
-    if (!busy) return;
-    const started = Date.now();
-    setElapsed(0);
-    const timer = window.setInterval(
-      () => setElapsed(Math.floor((Date.now() - started) / 1000)),
-      1000,
-    );
-    return () => window.clearInterval(timer);
-  }, [busy]);
 
   // Abort in flight if the screen goes away, so a slow reply cannot land on an
   // unmounted component.

@@ -18,10 +18,13 @@ from .tcx import parse_tcx
 
 LAST_SYNC_KEY = "hevy_last_sync_at"
 
-# Health metrics worth caching for v0.1 Q&A. Google Health supports daily rollups
-# for some types and only per-point listing for others, so both paths exist.
+# Health metrics worth caching for v0.1 Q&A. Google Health supports daily
+# rollups for some types and only per-point listing for others, so both paths
+# exist -- this is the rollup half. The listed types (sleep, resting heart
+# rate) name their own `data_type` in `_sync_sleep` and `_sync_resting_hr`;
+# there was a `LIST_METRICS` tuple here that named them a second time and that
+# nothing read, removed 2026-09-04.
 ROLLUP_METRICS = {"steps": "countSum"}
-LIST_METRICS = ("sleep", "daily-resting-heart-rate")
 
 # googlehealth_daily_rollup rejects any range longer than its page size, and the
 # page size itself stops working somewhere below 100. These two values are a

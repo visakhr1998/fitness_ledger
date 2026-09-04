@@ -65,7 +65,12 @@ MAX_TOOL_CALLS = 1
 # Tools a correct run never touches. get_volume_vs_target is the sharp one: left
 # to itself the agent called it with `this-week`, a barely-started week where
 # every muscle reads a full target short, and planned against that.
-FORBIDDEN_TOOLS = frozenset({"get_volume_vs_target", "get_neglected"})
+#
+# `get_neglected` was listed here too until 2026-09-04, when it was deleted
+# from the catalog for having no caller at all. Naming a tool that cannot be
+# called is a scorer that can only pass, which is the failure mode this
+# harness's own warning is about.
+FORBIDDEN_TOOLS = frozenset({"get_volume_vs_target"})
 
 
 # Measured, the hard way: gemini-3.5-flash-lite allows **15 requests a minute**.
