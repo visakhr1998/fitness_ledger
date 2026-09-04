@@ -112,6 +112,24 @@ class Config:
     # 30 here would cut short requests that were going to succeed.
     coach_timeout_seconds: float = 120.0
 
+    # The coach's own provider, independent of the dock's.
+    #
+    # Measured 2026-09-04 on the `back_neglected` fixture, same prompt, same
+    # code, one run each: `deepseek-v4-flash-0731` returned 0 sessions and 0
+    # sets; `gemini-3.6-flash` returned 4 sessions and 64 sets covering all
+    # eleven short muscles. A full gate pass on DeepSeek left five of nine
+    # fixtures with an empty week. The prompt was verified correct in both
+    # cases -- every placeholder renders, with 592 characters of deficits and
+    # the whole pool -- so this is the model, not the wiring.
+    #
+    # The two jobs want different things. The dock is frequent and wants low
+    # latency; planning is occasional (~3 requests) and wants a model that can
+    # actually plan. Before this they were one setting, so choosing for one
+    # chose for the other. Blank inherits `LLM_PROVIDER`, which is the old
+    # behaviour exactly.
+    coach_provider: str | None = None
+    coach_model: str | None = None
+
     # A second provider for the coach only, used when the first refuses.
     # Planning is the one place a quota error is fatal rather than annoying:
     # the dock can say "ask again in a minute", but a week that will not
@@ -161,6 +179,8 @@ class Config:
             llm_timeout_seconds=float(os.environ.get("LLM_TIMEOUT_SECONDS", "30")),
             llm_max_retries=int(os.environ.get("LLM_MAX_RETRIES", "1")),
             coach_timeout_seconds=float(os.environ.get("COACH_TIMEOUT_SECONDS", "120")),
+            coach_provider=os.environ.get("COACH_PROVIDER") or None,
+            coach_model=os.environ.get("COACH_MODEL") or None,
         )
 
 

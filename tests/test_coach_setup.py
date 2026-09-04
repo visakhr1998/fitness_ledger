@@ -208,6 +208,64 @@ def test_a_configured_fallback_resolves():
     )
 
 
+def test_the_coach_inherits_the_dock_provider_by_default():
+    """Unset `COACH_PROVIDER` must behave exactly as before the split, or every
+    existing .env changes meaning on upgrade."""
+    from fitness_ledger.coach import coach_provider
+
+    assert coach_provider(config(llm_provider="gemini", gemini_api_key="k")) == "gemini"
+    assert coach_provider(
+        config(
+            llm_provider="openai-compatible",
+            llm_base_url="https://api.deepseek.com",
+            llm_model="deepseek-v4-flash",
+            llm_api_key="k",
+        )
+    ) == "openai-compatible"
+
+
+def test_the_coach_provider_can_differ_from_the_dock():
+    """The point of the split, and the decision behind it.
+
+    Measured 2026-09-04 on `back_neglected`, same prompt and same code:
+    deepseek-v4-flash-0731 returned 0 sessions and 0 sets; gemini-3.6-flash
+    returned 4 sessions and 64 sets across all eleven short muscles. A full
+    gate pass on DeepSeek left five of nine fixtures with an empty week.
+
+    The dock wants low latency and runs constantly; the coach runs about three
+    requests when you ask for a week and wants a model that can plan. One
+    setting could not serve both.
+    """
+    from fitness_ledger.coach import coach_provider, configure_adk_environment
+
+    cfg = config(
+        llm_provider="openai-compatible",
+        llm_base_url="https://openrouter.ai/api/v1",
+        llm_model="deepseek/deepseek-v4-flash-0731",
+        llm_api_key="k",
+        coach_provider="gemini",
+        gemini_api_key="gk",
+    )
+
+    assert coach_provider(cfg) == "gemini"
+    # The dock's LLM_MODEL must not leak into the coach's Gemini request --
+    # that would hand ADK a DeepSeek id and fail far from the cause.
+    assert configure_adk_environment(cfg) == cfg.gemini_model
+
+
+def test_coach_model_overrides_the_gemini_default():
+    from fitness_ledger.coach import configure_adk_environment
+
+    cfg = config(
+        llm_provider="gemini",
+        gemini_api_key="gk",
+        coach_provider="gemini",
+        coach_model="gemini-3.5-flash",
+    )
+
+    assert configure_adk_environment(cfg) == "gemini-3.5-flash"
+
+
 def test_every_coach_transport_is_bounded():
     """Neither LiteLLM model may be built without a timeout and a retry cap.
 

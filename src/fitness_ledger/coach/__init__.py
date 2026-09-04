@@ -45,10 +45,19 @@ def configure_adk_environment(config: Config):
 
     Returns what ADK should be given as its model: a Gemini model id as a
     string, or a `LiteLlm` instance for any OpenAI-compatible provider.
+
+    `COACH_PROVIDER` decides, falling back to `LLM_PROVIDER` when unset. The
+    two were one setting until 2026-09-04, and they want opposite things: the
+    dock is frequent and wants low latency, planning is occasional and wants a
+    model that can plan. Measured on `back_neglected`, same prompt and code,
+    DeepSeek returned an empty week and Gemini returned four sessions and 64
+    sets -- so choosing for the dock was choosing wrong for the coach.
     """
     from .. import llm
 
-    if llm.resolve_provider(config) == "openai-compatible":
+    provider = coach_provider(config)
+
+    if provider == "openai-compatible":
         return _openai_compatible_model(config)
 
     if not config.gemini_api_key:
@@ -62,12 +71,28 @@ def configure_adk_environment(config: Config):
     os.environ.setdefault("GOOGLE_API_KEY", config.gemini_api_key)
     os.environ.setdefault("GOOGLE_GENAI_USE_VERTEXAI", "FALSE")
 
-    # LLM_MODEL overrides whichever provider the *dock* is using, which may not
-    # be Gemini. Honouring it unconditionally would hand ADK an Ollama tag or a
+    # COACH_MODEL is the coach's own, so it applies whenever the coach is on
+    # Gemini. LLM_MODEL is the *dock's*, and only carries over when the dock is
+    # on Gemini too -- honouring it otherwise would hand ADK an Ollama tag or a
     # Claude id and fail somewhere far from the cause.
-    if llm.resolve_provider(config) == "gemini" and config.llm_model:
+    if config.coach_model:
+        return config.coach_model
+    if config.coach_provider is None and llm.resolve_provider(config) == "gemini" and config.llm_model:
         return config.llm_model
     return config.gemini_model
+
+
+def coach_provider(config: Config) -> str:
+    """Which provider the coach talks to.
+
+    `COACH_PROVIDER` when set, otherwise whatever the dock resolved to. The
+    inherit-by-default keeps every existing `.env` behaving exactly as it did.
+    """
+    from .. import llm
+
+    if config.coach_provider:
+        return config.coach_provider.strip().lower()
+    return llm.resolve_provider(config)
 
 
 def _openai_compatible_model(config: Config):
