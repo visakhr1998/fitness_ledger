@@ -7,6 +7,8 @@ by the output schemas having nowhere to put a violation.
 
 from __future__ import annotations
 
+import asyncio
+
 from dataclasses import replace
 from datetime import date
 
@@ -454,3 +456,103 @@ def test_every_instruction_placeholder_is_published_to_state(bound):
 
     missing = set(re.findall(r"{(\w+)}", STRENGTH_INSTRUCTION)) - set(state)
     assert not missing, f"instruction reads state keys nothing writes: {sorted(missing)}"
+
+
+# --- retrying an unusable answer ------------------------------------------
+
+
+def _result(sessions, days=("2026-09-07",)):
+    return {"proposal": {"sessions": list(sessions)}, "training_days": list(days)}
+
+
+def test_an_empty_proposal_is_asked_again(monkeypatch):
+    """Measured 2026-09-04: the same prompt nine times to DeepSeek gave roughly
+    six usable weeks and three empty responses -- no tool call, no text. The
+    pipeline kept whichever arrived, so one week in three stored as a plan with
+    nothing in it and read as a model that cannot plan."""
+    from dataclasses import replace
+
+    from fitness_ledger.coach import agent
+    from fitness_ledger.config import Config
+
+    calls = []
+    answers = [_result([]), _result([]), _result([{"session_date": "2026-09-07"}])]
+
+    async def fake(repo, config, week_start=None, model=None, on_fallback=None):
+        calls.append(1)
+        return answers[len(calls) - 1]
+
+    monkeypatch.setattr(agent, "_run_coach", fake)
+    config = replace(Config.load(), coach_max_plan_attempts=3)
+
+    out = asyncio.run(agent._ask_until_usable(None, config, None))
+
+    assert len(calls) == 3
+    assert out["attempts"] == 3
+    assert out["proposal"]["sessions"]
+
+
+def test_a_usable_answer_is_not_asked_again(monkeypatch):
+    from dataclasses import replace
+
+    from fitness_ledger.coach import agent
+    from fitness_ledger.config import Config
+
+    calls = []
+
+    async def fake(repo, config, week_start=None, model=None, on_fallback=None):
+        calls.append(1)
+        return _result([{"session_date": "2026-09-07"}])
+
+    monkeypatch.setattr(agent, "_run_coach", fake)
+
+    out = asyncio.run(
+        agent._ask_until_usable(None, replace(Config.load(), coach_max_plan_attempts=3), None)
+    )
+
+    assert len(calls) == 1
+    assert out["attempts"] == 1
+
+
+def test_a_week_with_no_training_days_is_not_asked_again(monkeypatch):
+    """Then an empty proposal is the correct answer, and asking again spends
+    money to be told so twice."""
+    from dataclasses import replace
+
+    from fitness_ledger.coach import agent
+    from fitness_ledger.config import Config
+
+    calls = []
+
+    async def fake(repo, config, week_start=None, model=None, on_fallback=None):
+        calls.append(1)
+        return _result([], days=())
+
+    monkeypatch.setattr(agent, "_run_coach", fake)
+
+    asyncio.run(
+        agent._ask_until_usable(None, replace(Config.load(), coach_max_plan_attempts=3), None)
+    )
+
+    assert len(calls) == 1
+
+
+def test_running_out_of_attempts_returns_the_empty_week(monkeypatch):
+    """Returned, not raised: `planning.empty_week` reports it and `attempts`
+    records how hard we tried, which a raise would throw away."""
+    from dataclasses import replace
+
+    from fitness_ledger.coach import agent
+    from fitness_ledger.config import Config
+
+    async def fake(repo, config, week_start=None, model=None, on_fallback=None):
+        return _result([])
+
+    monkeypatch.setattr(agent, "_run_coach", fake)
+
+    out = asyncio.run(
+        agent._ask_until_usable(None, replace(Config.load(), coach_max_plan_attempts=2), None)
+    )
+
+    assert out["attempts"] == 2
+    assert out["proposal"]["sessions"] == []
