@@ -222,11 +222,35 @@ def test_judgement_scores(judged, capsys):
             scored(judged, "running_behind"),
             lambda run: bool(run.plan.run_sessions),
         ),
+        # Was "met target does not invent volume", asserting total_sets <= 60.
+        # Replaced 2026-09-04 rather than adjusted, per the parked finding.
+        #
+        # That assertion could not measure what it named. Measured offline on
+        # this fixture, allocating the identical week with no deficits and with
+        # every muscle maximally behind gives the *same* total at every shape:
+        #
+        #     slots  days   no deficit   max deficit
+        #         6     3           36            36
+        #         9     3           54            54
+        #        12     3           72            72
+        #
+        # `total_sets` is slots x days under a per-session ceiling, and the
+        # deficit only ranks what survives that ceiling. So the number carries
+        # no signal about whether the model responded to a shortfall, and 60
+        # was in effect "chose at most nine exercises" -- against a target sum
+        # of 166 across sixteen muscles. Volume above target is prevented by
+        # construction now: `allocate` takes each muscle's share from the
+        # weekly target, so a score restating that grades `planning.py`.
+        #
+        # What is worth grading on this fixture is the bug 3a4d6b6 actually
+        # fixed, and which PR #28 recorded: meeting your target used to produce
+        # a week with nothing in it. That is also a live failure mode -- three
+        # post-#37 runs gave 4 sessions, 0 and 1.
         eval_harness.score(
-            "met target does not invent volume",
+            "met target still produces a week",
             "all_targets_met",
             scored(judged, "all_targets_met"),
-            lambda run: run.plan.total_sets <= 60,
+            lambda run: bool(run.plan.sessions) and run.plan.total_sets > 0,
         ),
     ]
 
