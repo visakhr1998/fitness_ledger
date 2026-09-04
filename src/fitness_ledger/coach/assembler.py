@@ -17,7 +17,7 @@ from typing import Any
 from ..config import Config
 from ..db import SQLiteRepository
 from ..models import Plan
-from ..planning import allocate, validate
+from ..planning import allocate, empty_week, validate
 from ..queries import plan_adherence, planning_preferences  # noqa: F401  (re-export)
 
 
@@ -90,12 +90,15 @@ def assemble(
             running_target.distance_km_per_week if running_target else None
         ),
     )
+    known = pool_ids(result.get("exercise_pool")) or None
     problems = validate(
         allocation.sessions,
-        pool_ids=pool_ids(result.get("exercise_pool")) or None,
+        pool_ids=known,
         training_days=set(result.get("training_days") or []) or None,
         preferences=prefs,
     )
+    problems += unplannable(proposal.get("sessions") or [], allocation.sessions, known)
+    problems += empty_week(allocation.sessions, result.get("training_days") or [])
 
     plan = Plan(
         week_start=week_start,
@@ -136,6 +139,63 @@ def _trade_offs(stated: str, allocation) -> str:
         names = ", ".join(m.replace("_", " ") for m in allocation.unplaced)
         parts.append(f"No exercise in this week trains: {names}.")
     return " ".join(parts)
+
+
+def unplannable(
+    proposed: list[dict[str, Any]],
+    planned: tuple[Any, ...],
+    known: set[str] | None,
+) -> list[str]:
+    """Exercises the agent named that no longer exist in the assembled week.
+
+    `validate` cannot see these. It walks the *allocated* sessions, and an
+    exercise is dropped before that: allocation works from `targets`, so one
+    serving no muscle gets zero sets and `PlannedExercise` refuses to hold it.
+
+    That leaves a gap with a sharp edge. An invented template id is reported
+    only when the agent also filled `targets` -- then the exercise survives
+    allocation and validate flags it against the pool. Omit `targets` and the
+    same invented id vanishes with **nothing reported at all**. Measured on
+    `back_neglected`:
+
+        invented ids, targets given     2 proposed  2 kept   12 sets  2 problems
+        invented ids, targets omitted   2 proposed  0 kept    0 sets  0 problems
+        1 real + 3 invented, omitted    4 proposed  1 kept    6 sets  0 problems
+
+    The last row is the shape of a week that reads as the model planning
+    thinly and is really three quarters of its choices being discarded in
+    silence. `with_targets` closes this for pool members -- it fills the
+    muscles from the catalog -- but it can only look up what the pool holds,
+    so an unknown id falls through it.
+
+    Only unknown ids are reported here. An exercise that *is* in the pool and
+    still did not make the plan was squeezed out by the per-session ceiling,
+    which is allocation working as designed and is already accounted for in
+    the trade-offs.
+    """
+    if known is None:
+        return []
+
+    survived = {
+        exercise.exercise_template_id
+        for session in planned
+        for exercise in session.exercises
+    }
+    seen: set[str] = set()
+    problems = []
+    for session in proposed:
+        for exercise in session.get("exercises") or []:
+            template_id = exercise.get("exercise_template_id")
+            if not template_id or template_id in survived or template_id in seen:
+                continue
+            seen.add(template_id)
+            if template_id not in known:
+                problems.append(
+                    f"{exercise.get('title') or template_id!r} ({template_id}) is not "
+                    "in the exercise pool and named no muscle group, so it was "
+                    "dropped from the week"
+                )
+    return problems
 
 
 def with_targets(

@@ -349,6 +349,42 @@ def validate(
     return problems
 
 
+def empty_week(planned: tuple[PlannedSession, ...], training_days: list[str]) -> list[str]:
+    """A week with nothing in it, on days that were available.
+
+    `merge_proposals(None, None)` returns `{"sessions": [], ...}` -- a dict, so
+    truthy, so `api.py`'s `if not result.get("proposal")` guard passes it. The
+    guard catches a *missing* proposal and an empty one is a different thing.
+
+    Not hypothetical: a gate pass on 2026-09-04 left five of nine fixtures with
+    an empty week, and the plan stored fine each time. Meeting every target is
+    not an exception -- 3a4d6b6 exists because a met target used to produce a
+    near-empty week and that was the bug, not the design.
+
+    "Nothing in it" means no training delivered, not no rows: a lift session
+    whose exercises were all dropped during allocation leaves a session object
+    behind and would otherwise read as a planned week. A run session counts as
+    content on its own -- a running-only week is a real week.
+
+    Silent when no day was available. Then an empty week is the correct answer
+    and calling it a fault would be telling someone off for a week they said
+    they could not train.
+    """
+    if not training_days:
+        return []
+    trains = any(
+        session.kind == "run" or session.exercises for session in planned
+    )
+    if trains:
+        return []
+    return [
+        f"This week plans no training at all, though {len(training_days)} "
+        "day(s) were available. That is a failure to plan rather than a rest "
+        "week -- either the model returned an empty proposal, or every "
+        "exercise it chose was discarded."
+    ]
+
+
 def _rest_violations(sessions: tuple[PlannedSession, ...], prefs: Preferences) -> list[str]:
     """Two sessions training the same muscle group too close together."""
     if prefs.min_rest_days_same_muscle <= 0:

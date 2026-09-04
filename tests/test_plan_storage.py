@@ -194,6 +194,59 @@ def test_dry_run_allocates_without_storing(repo):
     assert repo.latest_plan() is None
 
 
+def test_an_exercise_that_cannot_be_placed_is_reported_not_swallowed(repo):
+    """The silent half of an invented template id.
+
+    `validate` walks the *allocated* sessions, and allocation drops an exercise
+    that serves no muscle before it ever gets there. So an invented id is
+    reported only when the agent also filled `targets`; omit them and the same
+    id disappears with nothing said. A week that looks thinly planned is then
+    really a week whose choices were discarded in silence.
+    """
+    from fitness_ledger.config import Config
+
+    result = a_result()
+    result["proposal"]["sessions"][0]["exercises"] += [
+        # Not in the pool and naming no muscle -- the shape that vanished.
+        {"exercise_template_id": "squat", "title": "Squat", "targets": []},
+    ]
+
+    out = assembler.assemble(repo, Config.load(), result, persist=False)
+
+    planned = {e.exercise_template_id for s in out["plan"].sessions for e in s.exercises}
+    assert planned == {"BENCH"}, "the unknown exercise should still be dropped"
+    assert any("squat" in problem for problem in out["problems"]), out["problems"]
+
+
+def test_an_unplaceable_exercise_is_reported_once_not_twice(repo):
+    """An invented id that *does* name a muscle survives allocation, so
+    `validate` already reports it against the pool. Reporting it again here
+    would make one fault read as two."""
+    from fitness_ledger.config import Config
+
+    result = a_result()
+    result["proposal"]["sessions"][0]["exercises"] += [
+        {"exercise_template_id": "squat", "title": "Squat", "targets": ["quadriceps"]},
+    ]
+    result["ledger_state"]["volume"]["muscles"].append(
+        {"muscle_group": "quadriceps", "sets_deficit": 4, "target_sets": 8}
+    )
+
+    problems = assembler.assemble(repo, Config.load(), result, persist=False)["problems"]
+
+    assert sum("squat" in problem for problem in problems) == 1, problems
+
+
+def test_a_pool_exercise_squeezed_by_the_ceiling_is_not_called_unplannable(repo):
+    """Dropping to fit the per-session ceiling is allocation working, and the
+    trade-offs already carry it. Only unknown ids are faults."""
+    assert assembler.unplannable(
+        [{"exercises": [{"exercise_template_id": "BENCH", "title": "Bench"}]}],
+        (),
+        {"BENCH"},
+    ) == []
+
+
 def test_only_positive_deficits_drive_allocation(repo):
     """A muscle at or above target is not short, and planning against it would
     invent volume."""

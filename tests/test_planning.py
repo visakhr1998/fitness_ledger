@@ -323,3 +323,50 @@ def test_without_deficits_it_still_allocates():
 
     # One exercise carries the whole 10, clamped to the per-exercise ceiling.
     assert allocate(week, {"chest": 10}).total_sets == MAX_SETS_PER_EXERCISE
+
+
+def test_an_empty_week_on_available_days_is_a_reported_failure():
+    """`merge_proposals(None, None)` returns `{"sessions": []}` -- a dict, so
+    truthy, so `api.py`'s "no proposal" guard passes it. A gate pass on
+    2026-09-04 left five of nine fixtures with an empty week and every one
+    stored without complaint."""
+    from fitness_ledger.planning import empty_week
+
+    problems = empty_week((), ["2026-09-07", "2026-09-08"])
+
+    assert len(problems) == 1
+    assert "no training at all" in problems[0]
+
+
+def test_a_session_whose_exercises_were_all_dropped_still_counts_as_empty():
+    """Allocation leaves the session object behind when every exercise in it
+    got zero sets, so counting sessions would call that a planned week."""
+    from datetime import date
+
+    from fitness_ledger.models import PlannedSession
+    from fitness_ledger.planning import empty_week
+
+    hollow = (PlannedSession(local_date=date(2026, 9, 7), kind="lift", exercises=()),)
+
+    assert empty_week(hollow, ["2026-09-07"])
+
+
+def test_a_running_only_week_is_not_empty():
+    """A run session is training. Flagging it would call a real week a
+    failure."""
+    from datetime import date
+
+    from fitness_ledger.models import PlannedSession
+    from fitness_ledger.planning import empty_week
+
+    runs = (PlannedSession(local_date=date(2026, 9, 7), kind="run", distance_km=8.0),)
+
+    assert empty_week(runs, ["2026-09-07"]) == []
+
+
+def test_an_empty_week_with_no_available_days_is_correct():
+    """Then it is the right answer, and calling it a fault would tell someone
+    off for a week they said they could not train."""
+    from fitness_ledger.planning import empty_week
+
+    assert empty_week((), []) == []

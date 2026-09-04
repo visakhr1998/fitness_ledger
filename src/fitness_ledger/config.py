@@ -99,6 +99,37 @@ class Config:
     llm_timeout_seconds: float = 30.0
     llm_max_retries: int = 1
 
+    # The same bound for the coach, which reaches its provider through ADK and
+    # LiteLLM rather than through `llm.py` -- so `llm._limits` never touched it
+    # and a planning request was left on LiteLLM's 600-second default. That is
+    # the omission `_limits` says it exists to prevent; the coach was simply a
+    # third transport nobody counted.
+    #
+    # Larger than the dock's 30s on purpose, not by guesswork: a planning
+    # request carries the whole exercise pool (~3.4k characters on real data)
+    # plus a structured output schema, and a full generation is roughly three
+    # of them -- the Week tab's own control starts apologising at 45 seconds.
+    # 30 here would cut short requests that were going to succeed.
+    coach_timeout_seconds: float = 120.0
+
+    # The coach's own provider, independent of the dock's.
+    #
+    # Measured 2026-09-04 on the `back_neglected` fixture, same prompt, same
+    # code, one run each: `deepseek-v4-flash-0731` returned 0 sessions and 0
+    # sets; `gemini-3.6-flash` returned 4 sessions and 64 sets covering all
+    # eleven short muscles. A full gate pass on DeepSeek left five of nine
+    # fixtures with an empty week. The prompt was verified correct in both
+    # cases -- every placeholder renders, with 592 characters of deficits and
+    # the whole pool -- so this is the model, not the wiring.
+    #
+    # The two jobs want different things. The dock is frequent and wants low
+    # latency; planning is occasional (~3 requests) and wants a model that can
+    # actually plan. Before this they were one setting, so choosing for one
+    # chose for the other. Blank inherits `LLM_PROVIDER`, which is the old
+    # behaviour exactly.
+    coach_provider: str | None = None
+    coach_model: str | None = None
+
     # How many times to ask for a week before giving up.
     #
     # Measured 2026-09-04, deepseek-v4-flash-0731 on `back_neglected`, the same
@@ -164,6 +195,10 @@ class Config:
             llm_reasoning_effort=os.environ.get("LLM_REASONING_EFFORT") or None,
             llm_timeout_seconds=float(os.environ.get("LLM_TIMEOUT_SECONDS", "30")),
             llm_max_retries=int(os.environ.get("LLM_MAX_RETRIES", "1")),
+            coach_timeout_seconds=float(os.environ.get("COACH_TIMEOUT_SECONDS", "120")),
+            coach_provider=os.environ.get("COACH_PROVIDER") or None,
+            coach_model=os.environ.get("COACH_MODEL") or None,
+
             coach_max_plan_attempts=int(os.environ.get("COACH_MAX_PLAN_ATTEMPTS", "3")),
         )
 

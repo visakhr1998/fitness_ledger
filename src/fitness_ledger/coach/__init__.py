@@ -14,6 +14,7 @@ are turned into a stated instruction rather than a traceback.
 from __future__ import annotations
 
 import os
+from typing import Any
 
 from ..config import Config
 
@@ -44,10 +45,19 @@ def configure_adk_environment(config: Config):
 
     Returns what ADK should be given as its model: a Gemini model id as a
     string, or a `LiteLlm` instance for any OpenAI-compatible provider.
+
+    `COACH_PROVIDER` decides, falling back to `LLM_PROVIDER` when unset. The
+    two were one setting until 2026-09-04, and they want opposite things: the
+    dock is frequent and wants low latency, planning is occasional and wants a
+    model that can plan. Measured on `back_neglected`, same prompt and code,
+    DeepSeek returned an empty week and Gemini returned four sessions and 64
+    sets -- so choosing for the dock was choosing wrong for the coach.
     """
     from .. import llm
 
-    if llm.resolve_provider(config) == "openai-compatible":
+    provider = coach_provider(config)
+
+    if provider == "openai-compatible":
         return _openai_compatible_model(config)
 
     if not config.gemini_api_key:
@@ -61,12 +71,28 @@ def configure_adk_environment(config: Config):
     os.environ.setdefault("GOOGLE_API_KEY", config.gemini_api_key)
     os.environ.setdefault("GOOGLE_GENAI_USE_VERTEXAI", "FALSE")
 
-    # LLM_MODEL overrides whichever provider the *dock* is using, which may not
-    # be Gemini. Honouring it unconditionally would hand ADK an Ollama tag or a
+    # COACH_MODEL is the coach's own, so it applies whenever the coach is on
+    # Gemini. LLM_MODEL is the *dock's*, and only carries over when the dock is
+    # on Gemini too -- honouring it otherwise would hand ADK an Ollama tag or a
     # Claude id and fail somewhere far from the cause.
-    if llm.resolve_provider(config) == "gemini" and config.llm_model:
+    if config.coach_model:
+        return config.coach_model
+    if config.coach_provider is None and llm.resolve_provider(config) == "gemini" and config.llm_model:
         return config.llm_model
     return config.gemini_model
+
+
+def coach_provider(config: Config) -> str:
+    """Which provider the coach talks to.
+
+    `COACH_PROVIDER` when set, otherwise whatever the dock resolved to. The
+    inherit-by-default keeps every existing `.env` behaving exactly as it did.
+    """
+    from .. import llm
+
+    if config.coach_provider:
+        return config.coach_provider.strip().lower()
+    return llm.resolve_provider(config)
 
 
 def _openai_compatible_model(config: Config):
@@ -110,7 +136,31 @@ def _openai_compatible_model(config: Config):
         model=f"openai/{config.llm_model}",
         api_base=config.llm_base_url.rstrip("/"),
         api_key=config.llm_api_key,
+        **_limits(config),
     )
+
+
+def _limits(config: Config) -> dict[str, Any]:
+    """How long a planning request may take, and how often to ask again.
+
+    The coach is a third transport. `llm._limits` bounds the dock's two and
+    says it is kept in one place "so a provider cannot be left unbounded by
+    omission" -- but it is never reached from here, because ADK talks to
+    everything non-Gemini through LiteLLM. So every plan ran on LiteLLM's
+    600-second default with no cap on retries.
+
+    Found by watching an eval pass sit at zero CPU for 45 seconds, 42 minutes
+    into a run that takes twenty. A stalled connection was indistinguishable
+    from a slow model, which is the same confusion PR #34 removed from the
+    dock and the intake box.
+
+    `0` means "use the SDK default", the same escape hatch `llm._limits` has,
+    for a local model that is legitimately slow.
+    """
+    limits: dict[str, Any] = {"num_retries": max(config.llm_max_retries, 0)}
+    if config.coach_timeout_seconds > 0:
+        limits["timeout"] = config.coach_timeout_seconds
+    return limits
 
 
 def is_quota_error(exc: BaseException) -> bool:
@@ -157,4 +207,5 @@ def fallback_model(config: Config):
         model=f"openai/{config.coach_fallback_model}",
         api_base=config.coach_fallback_base_url.rstrip("/"),
         api_key=config.coach_fallback_api_key,
+        **_limits(config),
     )

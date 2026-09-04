@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Any
 
 import fixtures
+from fitness_ledger import llm
 from fitness_ledger.config import Config
 from fitness_ledger.db import SQLiteRepository
 from fitness_ledger.models import Plan
@@ -108,7 +109,16 @@ class QuotaExhausted(RuntimeError):
 
 
 def _is_quota_error(exc: BaseException) -> bool:
-    return "RESOURCE_EXHAUSTED" in str(exc) or "429" in str(exc)
+    """Delegates, like `coach.is_quota_error` does.
+
+    This was a third independent matcher, and the loosest of the three: a bare
+    "429" anywhere in the message. PR #47 unified the other two for exactly
+    that reason -- `Bad request: invalid argument (request id req_a429bf)`
+    matched -- and missed this copy. Here the cost is a run that stops early:
+    two false positives in a row trip `QUOTA_GIVE_UP_AFTER` and the suite
+    reports that nothing measured the coach, when the coach was answering.
+    """
+    return llm.is_quota_refusal(exc)
 
 
 def _retry_after(exc: BaseException) -> float:

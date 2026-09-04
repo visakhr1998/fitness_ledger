@@ -32,6 +32,18 @@ Three things worth knowing:
   6.4s. `LLM_TIMEOUT_SECONDS` (default 30) caps the wait and `LLM_MAX_RETRIES`
   (default 1) asks again, because a slow draw is usually followed by a fast one.
   Set the timeout to `0` for a local model that is legitimately slow.
+  The planner has its own `COACH_TIMEOUT_SECONDS` (default 120): it reaches the
+  provider through ADK rather than the dock's client, so the setting above does
+  not apply to it, and a planning request is larger than a chat turn.
+- **The planner and the chat dock can use different providers**, and on some
+  setups they should. `COACH_PROVIDER` and `COACH_MODEL` override
+  `LLM_PROVIDER`/`LLM_MODEL` for planning only; leave them blank to use the
+  same provider for both. Chatting is frequent and wants a fast model; planning
+  happens a few times a week and wants one that can hold a whole week in its
+  head. Measured on one fixture with an identical prompt,
+  `deepseek-v4-flash-0731` returned an empty week and `gemini-3.6-flash`
+  returned four sessions and 64 sets, so the free Gemini tier is the better
+  planner even where DeepSeek is the better chat model.
 - **Free tiers usually cost you data instead.** Outside the EEA, UK and
   Switzerland, Google may use free-tier prompts to improve their products,
   including human review. The chat box sends your questions along with your
