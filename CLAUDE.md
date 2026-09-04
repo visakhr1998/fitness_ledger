@@ -195,7 +195,7 @@ Two rules, both learned the hard way:
 ## Working here
 
 ```bash
-./.venv/Scripts/python.exe -m pytest              # 563 tests (coach tests skip without the extra)
+./.venv/Scripts/python.exe -m pytest              # 601 tests (coach tests skip without the extra)
 cd frontend && npm run build                      # required after any frontend change
 ./.venv/Scripts/python.exe -m fitness_ledger.cli doctor
 ./.venv/Scripts/python.exe -m fitness_ledger.cli sync
