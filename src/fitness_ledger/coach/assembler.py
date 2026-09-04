@@ -17,7 +17,7 @@ from typing import Any
 from ..config import Config
 from ..db import SQLiteRepository
 from ..models import Plan
-from ..planning import allocate, validate
+from ..planning import allocate, empty_week, validate
 from ..queries import plan_adherence, planning_preferences  # noqa: F401  (re-export)
 
 
@@ -98,6 +98,7 @@ def assemble(
         preferences=prefs,
     )
     problems += unplannable(proposal.get("sessions") or [], allocation.sessions, known)
+    problems += empty_week(allocation.sessions, result.get("training_days") or [])
 
     plan = Plan(
         week_start=week_start,

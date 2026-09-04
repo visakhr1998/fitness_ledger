@@ -16,7 +16,7 @@ from . import icons, queries, vitals as vitals_module
 from .config import Config
 from .db import SQLiteRepository
 from .models import WORKING_SET_TYPES
-from .planning import Preferences, validate
+from .planning import Preferences, empty_week, validate
 from .progression import RepRange, progression_state, stalled
 from .queries import describe_window, get_targets, parse_window, rep_ranges
 from .volume import best_set_per_session, compute_volume, coverage, week_start
@@ -493,12 +493,18 @@ def plan_section(
         "available": True,
         "rules": plan_rules(preferences),
         "plan": plan.as_dict(),
+        # `empty_week` as well as `validate`, because validate walks the
+        # sessions and a plan with none gives it nothing to walk -- so a stored
+        # empty week rendered as a blank Week tab with no explanation. It is
+        # recomputable from the stored plan, unlike the exercises allocation
+        # dropped, so it survives the reload the generation-time report does
+        # not.
         "problems": validate(
             plan.sessions,
             pool_ids=catalog or None,
             training_days=(week_days - lost) or None,
             preferences=preferences,
-        ),
+        ) + empty_week(plan.sessions, sorted(week_days - lost)),
         "adherence": {
             "not_started": followed.not_started,
             "sessions_planned": followed.planned,
