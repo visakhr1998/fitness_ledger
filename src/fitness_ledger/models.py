@@ -19,6 +19,16 @@ LARGE_MUSCLES = frozenset(
     {"chest", "lats", "upper_back", "quadriceps", "hamstrings", "glutes", "shoulders"}
 )
 
+# Muscles whose training a run has to work around. Used to tell the running
+# planner which lifting days were leg days, because "prefer not to run the day
+# after a heavy leg session" is unanswerable from an exercise count alone.
+#
+# `lower_back` is in deliberately -- a deadlift day is a day a run feels, and
+# leaving it out would make the one session most likely to matter invisible.
+LEG_MUSCLES = frozenset(
+    {"quadriceps", "hamstrings", "glutes", "calves", "abductors", "adductors", "lower_back"}
+)
+
 
 @dataclass(frozen=True)
 class ExerciseTemplate:

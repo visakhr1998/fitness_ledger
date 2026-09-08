@@ -95,7 +95,11 @@ def test_the_ledger_state_carries_what_a_planner_needs(bound):
     ledger = gather_context(repo, config)["ledger_state"]
 
     assert set(ledger) == {
-        "volume", "volume_trend", "progression", "runs", "recovery", "insights",
+        # `runs` is the four-week trend; `runs_last_week` is the one complete
+        # week the running deficit is measured over, the same window `volume`
+        # uses. Both are kept because they answer different questions.
+        "volume", "volume_trend", "progression", "runs", "runs_last_week",
+        "recovery", "insights",
     }
     assert any(m["muscle_group"] == "chest" for m in ledger["volume"]["muscles"])
 
@@ -306,3 +310,63 @@ def test_the_context_reader_publishes_the_rendered_pool(bound):
     state["pool_summary"] = pool_summary(state)
     assert state["pool_summary"]
     assert state["pool_summary"] != "  (no exercises available -- the catalogue has not been synced)"
+
+
+# --- what the running planner is given -------------------------------------
+
+
+def test_the_running_deficit_reads_like_the_volume_table(bound):
+    """The running planner was handed raw run rows and asked to work out for
+    itself whether the week was behind -- arithmetic, on the side of the app
+    that does not do arithmetic, while the strength planner got a finished
+    table."""
+    from fitness_ledger.coach.context import running_deficit_summary
+    from fitness_ledger.models import RunningTarget
+
+    repo, config = bound
+    repo.set_running_target(RunningTarget(distance_km_per_week=25.0, sessions_per_week=3))
+
+    rendered = running_deficit_summary(gather_context(repo, config))
+
+    assert "of 25 km" in rendered
+    assert "of 3 sessions" in rendered
+    assert "short" in rendered
+
+
+def test_no_running_target_is_not_a_shortfall(bound):
+    """An unset target is not a shortfall, and saying "short 25 km" to someone
+    who never asked for 25 km would invent the goal. Same rule
+    `insights.running_shortfall` follows by staying silent."""
+    from fitness_ledger.coach.context import running_deficit_summary
+
+    repo, config = bound
+    assert repo.get_running_target() is None
+
+    rendered = running_deficit_summary(gather_context(repo, config))
+
+    assert "short" not in rendered.lower()
+    assert "No running target is set" in rendered
+
+
+def test_the_running_deficit_uses_one_complete_week(bound):
+    """Not the four-week trend window: a week's target against four weeks of
+    running would read as three weeks ahead."""
+    repo, config = bound
+    ledger = gather_context(repo, config)["ledger_state"]
+
+    assert ledger["runs_last_week"]["window"] != ledger["runs"]["window"]
+
+
+def test_the_free_day_rule_disappears_without_a_running_target(bound):
+    """It asked the strength planner to give up a training day for a planner
+    that is not built when no target exists."""
+    from fitness_ledger.coach.context import running_day_note
+    from fitness_ledger.models import RunningTarget
+
+    repo, config = bound
+    without = running_day_note(gather_context(repo, config))
+    assert "no day needs" in without
+
+    repo.set_running_target(RunningTarget(distance_km_per_week=25.0, sessions_per_week=3))
+    with_target = running_day_note(gather_context(repo, config))
+    assert "Leave at least one" in with_target
