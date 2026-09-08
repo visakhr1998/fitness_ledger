@@ -23,12 +23,15 @@ from fitness_ledger.coach.agent import (
     RunningProposal,
     RunSession,
     StrengthProposal,
+    diagnose_wire,
     merge_proposals,
+    planner_sampling,
     running_summary,
     strength_days,
 )
 from fitness_ledger.config import Config
 from fitness_ledger.db import SQLiteRepository
+from fitness_ledger.models import RunningTarget
 
 
 @pytest.fixture()
@@ -37,6 +40,11 @@ def bound(tmp_path):
         Config.load(), db_path=tmp_path / "agent.db", gemini_api_key="test-key"
     )
     with SQLiteRepository(config.db_path, 120) as repo:
+        # A running target, so `build_coach` assembles all three sub-agents.
+        # Without one the running planner is skipped by design, and the tests
+        # below are about how the planners are *configured* rather than about
+        # when they are included -- that conditional has its own tests.
+        repo.set_running_target(RunningTarget(distance_km_per_week=25.0, sessions_per_week=3))
         yield repo, config
 
 
@@ -264,6 +272,125 @@ def test_merging_carries_the_day_but_not_a_distance():
     assert "distance_km" not in session
 
 
+# --- what gets built, and with what settings -------------------------------
+
+
+def test_the_running_planner_is_skipped_without_a_target(tmp_path):
+    """A whole model request was being spent to be told there is nothing to do.
+
+    The running planner's own instruction says that without a target it must
+    return no sessions -- so on a ledger with none, every plan paid for a call
+    whose only possible answer was already known. Measured 2026-09-04: 29.0s of
+    a 156.1s Gemini plan, 4.4s of a 44.1s DeepSeek one.
+
+    Whether a target exists is a row in `user_settings`, not a judgement. This
+    is the same argument that made the context reader deterministic.
+    """
+    pytest.importorskip("google.adk", reason="coach extra not installed")
+    from fitness_ledger.coach.agent import build_coach
+
+    config = replace(
+        Config.load(), db_path=tmp_path / "no-target.db", gemini_api_key="test-key"
+    )
+    with SQLiteRepository(config.db_path, 120) as repo:
+        assert repo.get_running_target() is None
+        names = [agent.name for agent in build_coach(repo, config).sub_agents]
+
+    assert names == ["context_reader", "strength_planner"]
+
+
+def test_the_running_planner_returns_once_a_target_exists(bound):
+    """The skip must not be a one-way door: set a target and it comes back."""
+    pytest.importorskip("google.adk", reason="coach extra not installed")
+    from fitness_ledger.coach.agent import build_coach
+
+    repo, config = bound
+    names = [agent.name for agent in build_coach(repo, config).sub_agents]
+
+    assert names == ["context_reader", "strength_planner", "running_planner"]
+
+
+def test_the_planners_cap_how_long_the_model_may_think():
+    """Where the coach's latency was.
+
+    Measured 2026-09-04 on the real ledger, gemini-3.6-flash, same prompt and
+    database: no thinking config gave 156.1s total with 127.1s inside the
+    strength planner; a budget of 128 gave 16.8s and 68.1s across two runs,
+    with the plans unchanged. Thinking tokens are charged against the reply
+    without appearing in it, so that time was invisible.
+
+    Asserted as a positive number rather than a specific one: the value is a
+    measurement and may be retuned, but it must never be absent, and it must
+    never be zero -- `thinking_budget=0` is rejected with a bare
+    `400 INVALID_ARGUMENT`, the same shape as the `reasoning_effort="none"`
+    outage that took down every Gemini request in the app.
+    """
+    pytest.importorskip("google.adk", reason="coach extra not installed")
+
+    sampling = planner_sampling(Config.load())
+
+    assert sampling.thinking_config is not None, "the coach must cap thinking"
+    assert sampling.thinking_config.thinking_budget > 0, "0 is rejected by the API"
+    assert sampling.temperature == 0.0
+
+
+# --- telling the failure modes apart ---------------------------------------
+
+
+def wire_for(calls=(), text=""):
+    return {"function_calls": list(calls), "text_chars": len(text), "text_head": text, "events": 1}
+
+
+def test_a_planned_week_reads_as_ok():
+    verdicts = diagnose_wire(
+        {"strength_planner": wire_for(calls=["set_model_response"])},
+        {"strength_proposal": {"sessions": [{"session_date": "2026-09-07"}]}},
+    )
+    assert verdicts["strength_planner"] == "ok"
+
+
+def test_prose_instead_of_a_call_is_named_as_such():
+    """The observed DeepSeek failure: no tool call, some text, nothing stored.
+
+    Before this, that arrived as "no sessions" and was indistinguishable from a
+    model that considered the week and planned nothing -- which is how "the
+    model is unreliable" became a conclusion rather than a question.
+    """
+    verdicts = diagnose_wire(
+        {"strength_planner": wire_for(text="I would need more information about ")},
+        {},
+    )
+    assert "prose instead of a structured call" in verdicts["strength_planner"]
+
+
+def test_silence_is_distinguished_from_prose():
+    verdicts = diagnose_wire({"strength_planner": wire_for()}, {})
+    assert verdicts["strength_planner"] == "no call and no text"
+
+
+def test_a_structured_call_that_stored_nothing_points_at_the_plumbing():
+    """Schema satisfied on the wire, nothing in session state. That is ADK or
+    validation, not the model, and the verdict has to say so or the next person
+    debugs the prompt."""
+    verdicts = diagnose_wire({"strength_planner": wire_for(calls=["set_model_response"])}, {})
+    assert verdicts["strength_planner"] == "structured call made but nothing stored"
+
+
+def test_a_deliberately_empty_week_is_not_blamed_on_the_wire():
+    """A proposal that parsed and holds no sessions is the one case that really
+    is the model's judgement."""
+    verdicts = diagnose_wire(
+        {"strength_planner": wire_for(calls=["set_model_response"])},
+        {"strength_proposal": {"sessions": [], "rationale": "nothing to do"}},
+    )
+    assert verdicts["strength_planner"] == "empty proposal (schema satisfied, no sessions)"
+
+
+def test_a_skipped_running_planner_is_not_a_failure():
+    verdicts = diagnose_wire({"strength_planner": wire_for(calls=["set_model_response"])}, {})
+    assert verdicts["running_planner"] == "not run"
+
+
 # --- the trace -------------------------------------------------------------
 
 
@@ -330,7 +457,11 @@ def test_the_running_planner_has_no_tools(bound):
     _, strength, running = build_coach(repo, config).sub_agents
 
     assert running.tools == []
-    assert strength.tools, "the strength planner still needs the exercise pool"
+    assert strength.tools == [], (
+        "the strength planner holds no tools since 2026-09-04 -- an output "
+        "schema plus a tool is what makes ADK pick its prompt-based workaround "
+        "on one provider and the native path on another"
+    )
 
 
 def test_an_exercise_may_name_the_id_field_either_way():
@@ -382,8 +513,13 @@ def test_the_strength_planner_cannot_recompute_the_deficit(bound):
     _, strength, _ = build_coach(repo, config).sub_agents
 
     names = {getattr(t, "__name__", getattr(getattr(t, "func", None), "__name__", "")) for t in strength.tools}
-    assert names == {"get_progression_state"}
+    assert names == set(), "the planner holds no tools at all now"
     assert "get_volume_vs_target" not in names
+    # get_progression_state was the last one, removed 2026-09-04 and injected
+    # as `progression_summary` instead. The instruction has to carry it, or the
+    # planner is choosing loads with no idea what is ready to go up.
+    assert "{progression_summary}" in STRENGTH_INSTRUCTION
+    assert "no tools" in STRENGTH_INSTRUCTION
     # `get_neglected` was removed from the catalog outright on 2026-09-04 --
     # no agent held it and `gather_context` never called it -- so asserting
     # its absence here would now pass whatever the tool list did.
@@ -439,20 +575,14 @@ def test_every_instruction_placeholder_is_published_to_state(bound):
     import re
 
     from fitness_ledger.coach.agent import STRENGTH_INSTRUCTION
-    from fitness_ledger.coach.context import (
-        continuity_summary,
-        deficit_summary,
-        gather_context,
-        pool_summary,
-        training_days,
-    )
+    from fitness_ledger.coach.context import derive_summaries, gather_context
 
     repo, config = bound
     state = gather_context(repo, config)
-    state["training_days"] = training_days(state)
-    state["deficit_summary"] = deficit_summary(state)
-    state["continuity_summary"] = continuity_summary(state)
-    state["pool_summary"] = pool_summary(state)
+    # The same call the context reader makes, not a restatement of it -- a
+    # second list here could agree with the instruction while the reader
+    # publishes nothing.
+    state.update(derive_summaries(state))
 
     missing = set(re.findall(r"{(\w+)}", STRENGTH_INSTRUCTION)) - set(state)
     assert not missing, f"instruction reads state keys nothing writes: {sorted(missing)}"
