@@ -147,6 +147,28 @@ class Config:
     # is a real fault and asking again just bills twice for the same bug.
     coach_max_plan_attempts: int = 3
 
+    # How hard the coach's provider may think before answering.
+    #
+    # DeepSeek V4 defaults to `thinking: enabled` at `reasoning_effort: "high"`,
+    # and nothing here ever set otherwise -- so every plan has been running at
+    # the model's highest reasoning setting. Measured 2026-09-08 on one fixture,
+    # raw client, `deepseek-v4-flash` direct:
+    #
+    #     thinking default (high)   27-44s   3,574-6,314 reasoning tokens
+    #     thinking disabled          5-7s    none
+    #
+    # Decode is sequential, so those tokens are most of the wall clock.
+    #
+    # **"medium" is not a level.** The API documents `low`, `high` and `max`,
+    # and maps `medium` and `xhigh` onto `high` -- which is the default this
+    # exists to move away from. The genuine middle is `low`.
+    #
+    # Empty means "send nothing", leaving the provider's own default, which is
+    # the escape hatch if a provider rejects the parameter -- the failure mode
+    # that took the app down twice, once on `reasoning_effort="none"` and once
+    # on `thinking_budget=0`.
+    coach_reasoning_effort: str | None = "low"
+
     # A second provider for the coach only, used when the first refuses.
     # Planning is the one place a quota error is fatal rather than annoying:
     # the dock can say "ask again in a minute", but a week that will not
@@ -200,6 +222,7 @@ class Config:
             coach_model=os.environ.get("COACH_MODEL") or None,
 
             coach_max_plan_attempts=int(os.environ.get("COACH_MAX_PLAN_ATTEMPTS", "3")),
+            coach_reasoning_effort=os.environ.get("COACH_REASONING_EFFORT", "low").strip() or None,
         )
 
 

@@ -160,6 +160,21 @@ def _limits(config: Config) -> dict[str, Any]:
     limits: dict[str, Any] = {"num_retries": max(config.llm_max_retries, 0)}
     if config.coach_timeout_seconds > 0:
         limits["timeout"] = config.coach_timeout_seconds
+    if config.coach_reasoning_effort:
+        # The other half of the reasoning cap. `planner_sampling` carries the
+        # Gemini-native side through `thinking_config`; LiteLLM ignores that and
+        # takes `reasoning_effort` instead, so a provider reached this way was
+        # left thinking at its own default -- which for DeepSeek V4 is "high",
+        # and measured at 3,000-6,000 reasoning tokens a plan.
+        #
+        # `allowed_openai_params` is required, not optional. LiteLLM validates
+        # parameters against the *prefix* -- everything here is `openai/` so it
+        # can honour `api_base` -- and raises `UnsupportedParamsError: openai
+        # does not support parameters: ['reasoning_effort']` without it, which
+        # fails every plan rather than degrading. The provider behind the
+        # prefix does support it; LiteLLM has no way to know that.
+        limits["reasoning_effort"] = config.coach_reasoning_effort
+        limits["allowed_openai_params"] = ["reasoning_effort"]
     return limits
 
 
