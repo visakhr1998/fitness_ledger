@@ -86,6 +86,13 @@ def gather_context(
             "volume_trend": tools["get_volume_vs_target"](TREND_WINDOW),
             "progression": tools["get_progression_state"](),
             "runs": tools["get_recent_runs"](RUN_WINDOW),
+            # The same window the strength deficit uses, for the same reason:
+            # a running week is measured against one *complete* week, and the
+            # four-week list above is trend context rather than a shortfall.
+            # Fetched rather than filtered out of `runs`, so the window
+            # boundaries come from `parse_window` and cannot drift from the
+            # ones the volume table used.
+            "runs_last_week": tools["get_recent_runs"](PLANNING_WINDOW),
             "recovery": tools["get_recovery_signals"](RECOVERY_WINDOW),
             "insights": tools["get_insights"](),
         },
@@ -151,26 +158,51 @@ def continuity_summary(context: dict[str, Any]) -> str:
     if not previous.get("available"):
         return "No previous plan. This is the first week being planned."
 
+    # `get_previous_plan` returns the latest plan of *any* week, which after a
+    # replan is this same week's earlier draft. Saying so matters: the block
+    # otherwise reads "that week has not started, so there is nothing to judge"
+    # and then hands over that draft's shortfall as though it were a second
+    # week of completed history. The planner has no way to tell the two apart,
+    # and a muscle short in one draft would read as short for two weeks.
+    same_week = previous.get("week_start") == context.get("week_start")
     followed = previous.get("followed") or {}
-    lines = [
-        f"Last plan was for the week of {previous.get('week_start')}"
-        f" ({previous.get('status', 'proposed')})."
-    ]
-    if followed.get("not_started"):
-        # A plan for a week that has not begun says nothing about adherence,
-        # and reporting "0 of 6 trained" would have the planner writing around
-        # a failure that never happened.
-        lines.append("That week has not started, so there is nothing to judge yet.")
-    elif followed:
-        lines.append(
-            f"{followed.get('sessions_completed', 0)} of"
-            f" {followed.get('sessions_planned', 0)} of its sessions had logged training."
-        )
-        missed = followed.get("missed_days") or []
-        if missed:
-            lines.append(f"Nothing was logged on: {', '.join(missed)}.")
+
+    if same_week:
+        lines = [
+            f"An earlier draft of THIS SAME week ({previous.get('week_start')},"
+            f" {previous.get('status', 'proposed')}), which you are now replanning."
+            " It is a draft, not a week that happened, so it is not history and"
+            " nothing in it counts as a week trained."
+        ]
+    else:
+        lines = [
+            f"The plan for an earlier week, {previous.get('week_start')}"
+            f" ({previous.get('status', 'proposed')})."
+        ]
+        if followed.get("not_started"):
+            # A plan for a week that has not begun says nothing about
+            # adherence, and reporting "0 of 6 trained" would have the planner
+            # writing around a failure that never happened.
+            lines.append("That week has not started, so there is nothing to judge yet.")
+        elif followed:
+            lines.append(
+                f"{followed.get('sessions_completed', 0)} of"
+                f" {followed.get('sessions_planned', 0)} of its sessions had logged training."
+            )
+            missed = followed.get("missed_days") or []
+            if missed:
+                lines.append(f"Nothing was logged on: {', '.join(missed)}.")
+
     if previous.get("trade_offs"):
-        lines.append(f"It gave up: {previous['trade_offs']}")
+        # Labelled by where the numbers come from. These are what allocation
+        # could not cover in that draft -- an arithmetic result, not measured
+        # training -- and unlabelled they look exactly like logged shortfall.
+        whose = "that draft" if same_week else "that week's plan"
+        lines.append(
+            f"What allocation could not cover in {whose}"
+            f" (figures from the allocator, not from logged training):"
+            f" {previous['trade_offs']}"
+        )
     return " ".join(lines)
 
 
@@ -295,7 +327,74 @@ def derive_summaries(context: dict[str, Any]) -> dict[str, Any]:
         "continuity_summary": continuity_summary(context),
         "pool_summary": pool_summary(context),
         "progression_summary": progression_summary(context),
+        "running_day_note": running_day_note(context),
+        "running_deficit_summary": running_deficit_summary(context),
     }
+
+
+def running_deficit_summary(context: dict[str, Any]) -> str:
+    """The running week against its target, the way the deficit table reads.
+
+    The running planner was being handed two raw run rows and asked to work out
+    for itself whether the week was behind -- arithmetic, on the side of the
+    app that does not do arithmetic, while the strength planner received a
+    finished "X of Y sets, short Z" table.
+
+    Measured over one complete week, matching `deficit_summary` and
+    `insights.running_shortfall`, which uses the last complete week precisely
+    so it does not fire every Monday against a week that has barely started.
+
+    Silent about a shortfall when no target is set: an unset target is not a
+    shortfall, and saying "short 25 km" to someone who never asked for 25 km
+    would invent the goal.
+    """
+    target = ((context.get("goals") or {}).get("running_target")) or None
+    last_week = ((context.get("ledger_state") or {}).get("runs_last_week")) or {}
+    window = last_week.get("window", "the last complete week")
+    done_km = last_week.get("total_km") or 0
+    done_runs = last_week.get("count") or 0
+
+    if not target:
+        return (
+            f"  No running target is set. Last complete week ({window}):"
+            f" {done_runs} run(s), {done_km:g} km. Nothing is behind, because"
+            " nothing was asked for."
+        )
+
+    want_km = target.get("distance_km_per_week") or 0
+    want_runs = target.get("sessions_per_week") or 0
+    short_km = max(want_km - done_km, 0)
+    short_runs = max(want_runs - done_runs, 0)
+    return (
+        f"  Last complete week ({window}): {done_km:g} of {want_km:g} km"
+        f" (short {short_km:g}), {done_runs} of {want_runs} sessions"
+        f" (short {short_runs})."
+    )
+
+
+def running_day_note(context: dict[str, Any]) -> str:
+    """Rule 5 of the strength instruction, or the reason there isn't one.
+
+    "Leave a day free for the running planner" was unconditional, and with no
+    running target the running planner is not built at all -- so the strength
+    planner was giving up a training day for an agent that never runs, on a
+    week that could have used it.
+
+    Whether a target exists is already in the context; deciding it here keeps
+    the instruction from asking the model to work out whether a rule applies
+    to it.
+    """
+    target = ((context.get("goals") or {}).get("running_target")) or None
+    if not target:
+        return (
+            "Use as many of the listed training days as the week needs. No"
+            " running target is set, so no runs will be placed and no day needs"
+            " to be kept free."
+        )
+    return (
+        "Leave at least one listed training day free where you can. A running"
+        " planner comes after you and can only use days you have not filled."
+    )
 
 
 def training_days(context: dict[str, Any]) -> list[str]:

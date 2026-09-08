@@ -39,6 +39,7 @@ from pydantic import BaseModel, Field, model_validator
 
 from ..config import Config
 from ..db import SQLiteRepository
+from ..models import LEG_MUSCLES
 from . import configure_adk_environment, fallback_model, is_quota_error, require_adk
 from .context import build_context_reader, next_monday
 from .tools import build_tools
@@ -144,10 +145,20 @@ Last complete week, against the weekly target:
 Continuity -- what you said last time, and what became of it:
 {continuity_summary}
 
-That shortfall is what this week has to close. It is already measured over one
-complete week, and there is deliberately no tool to recompute it: picking your
-own window gives a part-finished week that reads as a full target short, and a
-plan built on that shortfall is built on nothing.
+Which of those two blocks to plan against:
+
+- The "last complete week" table above is the authoritative shortfall. It is
+  measured from training that actually happened, and it is what this week has
+  to close.
+- Anything in the continuity block headed "what allocation could not cover" is
+  an arithmetic result from a previous draft, not logged training. Use it to
+  avoid repeating a shape that already failed to cover something. Do not treat
+  it as a second week of history, and do not add it to the table above.
+
+The table is already measured over one complete week, and there is deliberately
+no way to recompute it: picking your own window gives a part-finished week that
+reads as a full target short, and a plan built on that shortfall is built on
+nothing.
 
 Exercises you may use, with the id to copy and the muscles each trains:
 {pool_summary}
@@ -158,14 +169,21 @@ that is short, so there is nothing to widen it to.
 Whether each lift is due to go up, and at what load:
 {progression_summary}
 
+This block is background for the rationale only. Loads and set counts are
+decided after you, from double-progression state read at the time a session is
+written. Do not let "ready to go up", "hold" or "below range" change which
+exercises you pick or which days you put them on -- a lift being below its rep
+range is not a reason to drop it from the week.
+
 You have no tools. Everything you need is above.
 
 Rules you must not break:
 
-1. Never do arithmetic. Every number you mention must have come from a tool
-   result or from the values above. Do not total sets, estimate a one-rep max,
-   or work out a deficit yourself. If you need a number you were not given,
-   call a tool for it; if no tool provides it, say so instead of deriving it.
+1. Never do arithmetic. Every number you mention must have come from the values
+   above. Do not total sets, estimate a one-rep max, or work out a deficit
+   yourself. There are no tools to call: if you need a number you were not
+   given, say so in the rationale rather than deriving it, and plan the week
+   anyway with what you have.
 
 2. Never say how many sets an exercise should have. That is decided after you,
    from the deficit. Choose the exercises and the days; the sets follow.
@@ -175,16 +193,31 @@ Rules you must not break:
    79D0BB3A, not a name. An invented id such as "bench_press" cannot be written
    to Hevy, and a week of them is a week that does nothing.
 
+3a. For each exercise, `targets` lists EVERY muscle that exercise trains, copied
+   from the pool entry -- its primary muscle and all of its secondaries. Not
+   only the muscles that are short.
+
+   Chest Press (Machine), listed in the pool as chest (also shoulders,
+   triceps), is:
+
+       targets: ["chest", "shoulders", "triceps"]
+
+   even in a week where only chest is behind. Set counts are worked out from
+   these, and one set of a press genuinely serves all three -- a muscle you
+   leave out gets no credit for work it actually received, and the week ends up
+   over-training it somewhere else to make up a gap that was never real.
+
 4. Only use the training days listed above. The others are unavailable.
 
-5. Leave at least one listed training day free where you can. The running
-   planner comes after you and can only use days you have not filled.
+5. {running_day_note}
 
-6. If a shortfall also appears in the continuity note above, say so in the
-   rationale -- a muscle short for a third week is a different situation from
-   one short for the first time, and the plan should read like it knows that.
-   Do not reproach anyone for a missed session; report what happened and plan
-   around it.
+6. If a muscle is short in the "last complete week" table AND the continuity
+   block shows the same muscle was already missed, say so in the rationale --
+   a shortfall that has survived a plan is a different situation from a new
+   one. Only claim a pattern over the weeks you were actually shown above:
+   with one complete week and one earlier draft, "short again" is as strong a
+   claim as the data supports. Do not reproach anyone for a missed session;
+   report what happened and plan around it.
 
 7. You may direct training. You may not direct health. Reporting that sleep
    averaged five hours is fine. Telling someone to rest, skip a session, or
@@ -217,6 +250,15 @@ Active goals and targets: {goals}
 Lifting is already placed on these days:
 {strength_days}
 
+The leg-work count is how many of that day's exercises train legs -- quads,
+hamstrings, glutes, calves, adductors, abductors or lower back. It is a count
+of exercises, not of sets: set counts are worked out after both planners run,
+so nobody knows them yet. Use it to tell a leg day from an upper day, which is
+what rule 4 turns on.
+
+Where the running week stands:
+{running_deficit_summary}
+
 Recent running, for context:
 {running_summary}
 
@@ -238,6 +280,12 @@ Rules you must not break:
 4. Prefer not to put a hard run the day after a heavy leg session, and prefer
    not to stack a run on a day that already has a long lifting session. These
    are preferences, not hard rules; if the week is tight, say so in trade_offs.
+
+   If you place a run the day after a lifting day anyway, name it in
+   trade_offs: which run, which lifting day it follows, and why -- whether no
+   free day was left, or the free days that were left would have bunched the
+   runs worse. "Unavoidable" on a week that had a free day is the one thing
+   not to write, because it reads as a constraint and is a choice.
 
 5. You may direct training. You may not direct health. Reporting that sleep
    averaged five hours is fine. Telling someone to rest, skip a run, or train
@@ -262,11 +310,40 @@ def strength_days(state: dict[str, Any]) -> str:
     sessions = proposal.get("sessions") or []
     if not sessions:
         return "  (no lifting sessions planned)"
-    return "\n".join(
-        f"  {session.get('session_date')}: {session.get('focus') or 'lifting'}"
-        f" ({len(session.get('exercises') or [])} exercises)"
-        for session in sessions
-    )
+
+    # Which exercises train legs, looked up in the pool rather than read off
+    # the proposal: `targets` is not filled in until `assembler.with_targets`
+    # runs, which is after both planners, so at this point the model has
+    # usually left it empty.
+    by_id = {
+        row.get("exercise_template_id") or row.get("id"): row
+        for row in state.get("exercise_pool") or []
+    }
+
+    def legs_in(session: dict[str, Any]) -> int:
+        count = 0
+        for exercise in session.get("exercises") or []:
+            known = by_id.get(exercise.get("exercise_template_id")) or {}
+            muscles = {
+                known.get("primary_muscle_group"),
+                *(known.get("secondary_muscle_groups") or ()),
+                *(exercise.get("targets") or ()),
+            }
+            count += bool(muscles & LEG_MUSCLES)
+        return count
+
+    lines = []
+    for session in sessions:
+        total = len(session.get("exercises") or [])
+        # A count, not a verdict. Whether that is "heavy" is the running
+        # planner's call, and set counts do not exist yet -- allocation runs
+        # after both planners, so this is an honest proxy rather than a number
+        # pretending to be volume.
+        lines.append(
+            f"  {session.get('session_date')}: {session.get('focus') or 'lifting'}"
+            f" ({total} exercises, {legs_in(session)} of them leg work)"
+        )
+    return "\n".join(lines)
 
 
 def running_summary(state: dict[str, Any]) -> str:
@@ -293,6 +370,7 @@ def _running_instruction(context) -> str:  # noqa: ANN001 - ADK's ReadonlyContex
         training_days=state.get("training_days", []),
         goals=state.get("goals", {}),
         strength_days=strength_days(state),
+        running_deficit_summary=state.get("running_deficit_summary", ""),
         running_summary=running_summary(state),
     )
 

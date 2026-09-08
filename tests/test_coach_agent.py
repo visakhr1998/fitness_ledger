@@ -133,7 +133,10 @@ def test_the_strength_planner_cannot_choose_its_own_window():
     rather than forbidding the act.
     """
     flat = " ".join(STRENGTH_INSTRUCTION.split())
-    assert "no tool to recompute it" in flat
+    # "no way", not "no tool": since 2026-09-04 the planner has no tools at
+    # all, so phrasing the absence as a missing tool would be describing a
+    # menu it cannot see.
+    assert "no way to recompute it" in flat
     assert "part-finished week" in flat
 
 
@@ -686,3 +689,52 @@ def test_running_out_of_attempts_returns_the_empty_week(monkeypatch):
 
     assert out["attempts"] == 2
     assert out["proposal"]["sessions"] == []
+
+
+def test_the_running_planner_can_tell_a_leg_day_from_an_upper_day():
+    """Rule 4 turns on "was that a leg day", and the running planner could only
+    see an exercise count.
+
+    Looked up in the pool, not read off the proposal: `targets` is not filled
+    until `assembler.with_targets`, which runs after both planners, so at this
+    point the model has usually left it empty.
+    """
+    state = {
+        "exercise_pool": [
+            {"exercise_template_id": "SQ", "primary_muscle_group": "quadriceps",
+             "secondary_muscle_groups": ["glutes"]},
+            {"exercise_template_id": "BP", "primary_muscle_group": "chest",
+             "secondary_muscle_groups": ["triceps"]},
+        ],
+        "strength_proposal": {"sessions": [
+            {"session_date": "2026-09-14", "focus": "lower",
+             "exercises": [{"exercise_template_id": "SQ"}]},
+            {"session_date": "2026-09-16", "focus": "upper",
+             "exercises": [{"exercise_template_id": "BP"}]},
+        ]},
+    }
+
+    rendered = strength_days(state)
+
+    assert "1 of them leg work" in rendered.splitlines()[0]
+    assert "0 of them leg work" in rendered.splitlines()[1]
+
+
+def test_the_leg_count_survives_an_exercise_missing_from_the_pool():
+    """An unknown id must not crash the running planner's prompt -- it already
+    costs the week its exercise at assembly."""
+    state = {
+        "exercise_pool": [],
+        "strength_proposal": {"sessions": [
+            {"session_date": "2026-09-14", "exercises": [{"exercise_template_id": "???"}]},
+        ]},
+    }
+
+    assert "0 of them leg work" in strength_days(state)
+
+
+def test_the_running_instruction_is_given_the_running_deficit():
+    """It was being handed raw run rows while the strength planner got a
+    finished table."""
+    assert "{running_deficit_summary}" in RUNNING_INSTRUCTION
+    assert "{strength_days}" in RUNNING_INSTRUCTION
