@@ -198,3 +198,9 @@ frontend/dist/
 !src/fitness_ledger/web/dist/
 !src/fitness_ledger/web/dist/**
 *.tsbuildinfo
+
+# UAT scratch. Holds the checklist workbook and, more importantly, per-scenario
+# copies of the real ledger -- 32 MB of personal training data at the time of
+# writing, for the same reason `data/` and `*.db` are ignored above. Results are
+# also machine-specific: they record what this ledger did on one day.
+qa/uat/
