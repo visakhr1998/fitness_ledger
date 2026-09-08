@@ -30,6 +30,8 @@ Two properties stay enforced structurally rather than by asking nicely:
 
 from __future__ import annotations
 
+import logging
+
 from datetime import date
 from typing import Any
 
@@ -44,6 +46,8 @@ from .tools import build_tools
 
 # ADK's own plumbing, which shows up alongside real tool calls in the stream.
 ADK_INTERNAL_CALLS = frozenset({"set_model_response"})
+
+_log = logging.getLogger(__name__)
 
 
 # --- what each planner may return -------------------------------------------
@@ -151,8 +155,10 @@ Exercises you may use, with the id to copy and the muscles each trains:
 That is the whole pool. It already includes something for every muscle group
 that is short, so there is nothing to widen it to.
 
-You have one tool: get_progression_state, which says whether a lift is due to
-go up. Everything else you need is above.
+Whether each lift is due to go up, and at what load:
+{progression_summary}
+
+You have no tools. Everything you need is above.
 
 Rules you must not break:
 
@@ -355,6 +361,58 @@ def _joined(*labelled: tuple[str, str | None]) -> str:
 # because it teaches you to ignore failures.
 PLANNER_TEMPERATURE = 0.0
 
+# How many tokens Gemini may spend thinking before it answers.
+#
+# This is where the coach's latency was. Measured 2026-09-04 on the real
+# ledger, gemini-3.6-flash, identical prompt and database:
+#
+#     no thinking_config   156.1s total, 127.1s in the strength planner
+#     thinking_budget=128   16.8s total,  12.7s in the strength planner
+#     thinking_budget=128   68.1s total,  43.2s in the strength planner
+#
+# Two samples, and the spread is wide -- that variance is the provider's and is
+# already documented for the dock (the same request measured 2.9s to 103.7s).
+# But the floor moves by an order of magnitude and the plans were unchanged:
+# 3 sessions / 19 exercises and 4 sessions / 20 exercises against the
+# baseline's 3 sessions. Thinking tokens are charged against the reply without
+# appearing in it, so this was time spent invisibly.
+#
+# **128, not 0.** `thinking_budget=0` is rejected with `400 INVALID_ARGUMENT`,
+# whose message names no parameter -- the same shape as the `reasoning_effort`
+# outage of 2026-08-29, where "none" was the one rejected value and took down
+# every Gemini request in the app. If a future model rejects 128 too, the error
+# will look like a malformed schema and will not be. Change this value only
+# with a measurement, and never to zero.
+PLANNER_THINKING_BUDGET = 128
+
+
+def planner_sampling(config: Config):
+    """Every model setting the planners share, in one place.
+
+    The coach keeps not inheriting settings the dock already has, and each time
+    it is found separately: it missed `llm._limits`, so every plan ran on
+    LiteLLM's 600-second default until 2026-09-04; it missed the reasoning cap
+    the dock has had since the August outage, which is where its latency was;
+    and it missed the provider setting until `COACH_PROVIDER` existed. Three
+    instances of one omission.
+
+    So this is the seam. A setting that belongs to "how the coach talks to a
+    model" goes here, and both planners get it by construction rather than by
+    someone remembering to pass it twice.
+
+    The thinking budget applies to Gemini. An OpenAI-compatible provider
+    reached through LiteLLM ignores it, which is why `_limits` in
+    `coach/__init__.py` carries that side and this carries the native one.
+    """
+    from google.genai import types
+
+    return types.GenerateContentConfig(
+        temperature=PLANNER_TEMPERATURE,
+        thinking_config=types.ThinkingConfig(
+            thinking_budget=PLANNER_THINKING_BUDGET
+        ),
+    )
+
 
 def build_coach(
     repo: SQLiteRepository,
@@ -391,9 +449,20 @@ def build_coach(
     #
     # Removing a tool beats repeating an instruction. A rule the model *can*
     # break is one that eventually gets broken.
-    allowed = {"get_progression_state"}
-    tools = [tool for tool in build_tools(repo, config) if tool.__name__ in allowed]
-    sampling = types.GenerateContentConfig(temperature=PLANNER_TEMPERATURE)
+    # get_progression_state went the same way on 2026-09-04, and it was the
+    # last one. `context.progression_summary` renders it into the instruction
+    # from data `gather_context` already fetched, so nothing new is read.
+    #
+    # Removing it does more than save a round trip. ADK only reaches for its
+    # prompt-based `set_model_response` workaround when an agent has an output
+    # schema *and* tools -- so while the planner held one, Gemini took that
+    # path (its own source calls it "strictly less reliable") and an
+    # OpenAI-compatible provider took the native `response_format` one. Same
+    # agent, same prompt, two different mechanisms for returning structured
+    # output, chosen by a capability check nobody in this repo wrote. With no
+    # tools, both providers take the native path.
+    tools: list[Any] = []
+    sampling = planner_sampling(config)
 
     strength = LlmAgent(
         name="strength_planner",
@@ -435,10 +504,27 @@ def build_coach(
     # Workflow is a graph API (nodes, edges, routes) rather than a drop-in, and
     # ADK's own note says it cannot yet be an LlmAgent sub-agent. This is a
     # straight line of three steps; the graph would buy nothing.
-    return SequentialAgent(
-        name="coach",
-        sub_agents=[build_context_reader(repo, config, week), strength, running],
-    )
+    # The running planner is skipped outright when no running target is set.
+    #
+    # Its own instruction tells it that without a target there is nothing to
+    # plan and it should return no sessions -- so on a ledger with no target,
+    # every plan spent a whole model request to be told nothing. Measured
+    # 2026-09-04: 29.0s of a 156.1s Gemini plan, 4.4s of a 44.1s DeepSeek one.
+    #
+    # Whether a target exists is a row in `user_settings`, not a judgement, and
+    # this is the same argument that made the context reader deterministic: an
+    # LlmAgent asked to confirm what a query already answers spends a request
+    # to save a request. `merge_proposals` already treats a missing running
+    # half as empty, so nothing downstream changes.
+    steps = [build_context_reader(repo, config, week), strength]
+    if repo.get_running_target() is not None:
+        steps.append(running)
+
+    # SequentialAgent is deprecated in ADK 2.6 in favour of Workflow, but
+    # Workflow is a graph API (nodes, edges, routes) rather than a drop-in, and
+    # ADK's own note says it cannot yet be an LlmAgent sub-agent. This is a
+    # straight line of two or three steps; the graph would buy nothing.
+    return SequentialAgent(name="coach", sub_agents=steps)
 
 
 async def propose_week(
@@ -526,6 +612,12 @@ async def _ask_until_usable(
         result["attempts"] = attempt
         if _has_week(result) or not result.get("training_days"):
             return result
+        _log.warning(
+            "coach attempt %d/%d produced no week: %s",
+            attempt,
+            attempts,
+            result.get("diagnostics"),
+        )
 
     # Out of attempts. Returned rather than raised, so the caller still gets the
     # week_start, the ledger state and `attempts` -- a raise would discard the
@@ -533,6 +625,79 @@ async def _ask_until_usable(
     # next to the reason, the same way `assemble` hands back its problems
     # alongside the plan rather than instead of it.
     return result
+
+
+def _record_wire(wire: dict[str, dict[str, Any]], event: Any) -> None:
+    """Accumulate what each planner actually put on the wire.
+
+    When a plan comes back empty we could not tell three very different
+    failures apart: a true empty completion, a reply the schema rejected, and a
+    valid structured call that never reached `assemble`. All three arrive as
+    "no sessions", and guessing between them is how "DeepSeek is unreliable"
+    became a conclusion rather than a question.
+
+    So this records, per agent, only what is cheap and non-sensitive: whether
+    any function call was made and which, whether any text came back and how
+    much, and the first of that text. The text prefix matters because the one
+    observed failure shape -- a reply that is prose instead of a call -- is
+    unrecognisable from counts alone.
+    """
+    author = getattr(event, "author", "?")
+    seen = wire.setdefault(
+        author, {"function_calls": [], "text_chars": 0, "text_head": "", "events": 0}
+    )
+    seen["events"] += 1
+
+    for call in event.get_function_calls() or []:
+        seen["function_calls"].append(call.name)
+
+    content = getattr(event, "content", None)
+    for part in getattr(content, "parts", None) or []:
+        text = getattr(part, "text", None)
+        if not text:
+            continue
+        seen["text_chars"] += len(text)
+        if not seen["text_head"]:
+            seen["text_head"] = text[:400]
+
+
+def diagnose_wire(wire: dict[str, dict[str, Any]], state: dict[str, Any]) -> dict[str, str]:
+    """Name the failure mode for each planner, in words that distinguish them.
+
+    The verdicts are deliberately narrow. "ok" means a proposal with sessions
+    reached session state; everything else says *where* it stopped, so a bad
+    run points at the layer to look in rather than at the model by default.
+    """
+    verdicts: dict[str, str] = {}
+    for agent, key in (
+        ("strength_planner", "strength_proposal"),
+        ("running_planner", "running_proposal"),
+    ):
+        seen = wire.get(agent)
+        if seen is None:
+            verdicts[agent] = "not run"
+            continue
+
+        proposal = state.get(key)
+        sessions = (proposal or {}).get("sessions")
+        structured = [c for c in seen["function_calls"] if c in ADK_INTERNAL_CALLS]
+
+        if sessions:
+            verdicts[agent] = "ok"
+        elif proposal is not None:
+            # Parsed, stored, and still empty: the model answered the schema
+            # and chose to plan nothing. This is the only verdict that is
+            # genuinely about the model's judgement.
+            verdicts[agent] = "empty proposal (schema satisfied, no sessions)"
+        elif structured:
+            # It made the structured call and nothing landed in state, which
+            # points at validation or ADK plumbing rather than at the model.
+            verdicts[agent] = "structured call made but nothing stored"
+        elif seen["text_chars"]:
+            verdicts[agent] = f"prose instead of a structured call ({seen['text_chars']} chars)"
+        else:
+            verdicts[agent] = "no call and no text"
+    return verdicts
 
 
 async def _run_coach(
@@ -558,11 +723,13 @@ async def _run_coach(
     )
 
     trace: list[dict[str, Any]] = []
+    wire: dict[str, dict[str, Any]] = {}
     async for event in runner.run_async(
         user_id="local",
         session_id=session.id,
         new_message=types.Content(role="user", parts=[types.Part(text="Plan next week.")]),
     ):
+        _record_wire(wire, event)
         for call in event.get_function_calls() or []:
             # ADK delivers the structured output as an internal call. It is not
             # a tool the coach chose, and counting it as one would make every
@@ -576,9 +743,23 @@ async def _run_coach(
     )
     state = final.state
 
+    verdicts = diagnose_wire(wire, state)
+    _log.info(
+        "coach pass: %s",
+        "; ".join(f"{agent}={verdict}" for agent, verdict in sorted(verdicts.items())),
+    )
+    for agent, seen in sorted(wire.items()):
+        if verdicts.get(agent, "ok") != "ok" and seen.get("text_head"):
+            # The one thing worth seeing in full when a pass fails: what the
+            # model said instead of answering.
+            _log.info("coach pass: %s said %r", agent, seen["text_head"])
+
     return {
         "week_start": state.get("week_start"),
         "training_days": state.get("training_days", []),
+        # Per-planner verdicts, so an empty week says which layer stopped it.
+        "diagnostics": verdicts,
+        "wire": wire,
         "proposal": merge_proposals(
             state.get("strength_proposal"), state.get("running_proposal")
         ),

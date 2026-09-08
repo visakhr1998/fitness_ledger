@@ -238,6 +238,66 @@ def pool_summary(context: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def progression_summary(context: dict[str, Any]) -> str:
+    """Which lifts are due to go up, rendered into the instruction.
+
+    This was the strength planner's last tool. Handing it over instead closes
+    a fork nobody chose: ADK only reaches for its prompt-based
+    `set_model_response` workaround when an agent has an output schema *and*
+    tools, so holding one tool put Gemini on that path while an
+    OpenAI-compatible provider took the native one. Same agent, same prompt,
+    two different mechanisms for getting structured output back, decided by
+    which provider was configured.
+
+    With `tools=[]` both providers take the native path, and the behaviour
+    stops depending on a capability check buried in ADK.
+
+    It is also the same move PR #37 made for the exercise pool, for the same
+    reason and in the same words: removing a tool beats repeating an
+    instruction, because a call the model *may* make is one it will sometimes
+    skip. The data was already being fetched -- `gather_context` puts it in
+    `ledger_state.progression` -- so nothing new is read here.
+    """
+    rows = ((context.get("ledger_state") or {}).get("progression")) or []
+    if not rows:
+        return "  (no lift has enough recent history to judge)"
+
+    lines: list[str] = []
+    for row in rows:
+        weight = row.get("working_weight_kg")
+        load = f"{weight:g} kg" if weight is not None else "bodyweight"
+        ready = "READY to go up" if row.get("ready_to_progress") else "hold"
+        suggested = row.get("suggested_weight_kg")
+        target = f", next {suggested:g} kg" if suggested is not None else ""
+        lines.append(
+            f"  {row.get('exercise')}: {load}, {ready}{target}"
+            f" -- {row.get('verdict', '')}"
+        )
+    return "\n".join(lines)
+
+
+def derive_summaries(context: dict[str, Any]) -> dict[str, Any]:
+    """Everything the instructions read that is computed from the raw context.
+
+    One definition, because the alternative is two lists kept in agreement --
+    the shape `sync_all` exists to avoid, and the shape that let a placeholder
+    ship unpublished once already. ADK substitutes `{key}` from session state,
+    so a key the reader forgets renders literally and silently: the model reads
+    the word "{pool_summary}" and the failure looks like a prompt problem.
+
+    The test that guards this calls the same function rather than restating the
+    list, so a new summary cannot be added to the instruction and forgotten
+    here.
+    """
+    return {
+        "training_days": training_days(context),
+        "deficit_summary": deficit_summary(context),
+        "continuity_summary": continuity_summary(context),
+        "pool_summary": pool_summary(context),
+        "progression_summary": progression_summary(context),
+    }
+
+
 def training_days(context: dict[str, Any]) -> list[str]:
     """Days of the planned week that are actually trainable.
 
@@ -272,10 +332,7 @@ def build_context_reader(repo: SQLiteRepository, config: Config, week_start: dat
 
         async def _run_async_impl(self, ctx):  # noqa: ANN001 - ADK's signature
             state = gather_context(repo, config, week_start)
-            state["training_days"] = training_days(state)
-            state["deficit_summary"] = deficit_summary(state)
-            state["continuity_summary"] = continuity_summary(state)
-            state["pool_summary"] = pool_summary(state)
+            state.update(derive_summaries(state))
             yield Event(
                 author=self.name,
                 actions=EventActions(state_delta=state),
