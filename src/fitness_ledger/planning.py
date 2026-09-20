@@ -31,7 +31,14 @@ MIN_SETS_PER_EXERCISE = 2
 
 # Above this, added sets stop buying much and start eating the session. It also
 # stops one badly neglected muscle from swallowing a whole day.
-MAX_SETS_PER_EXERCISE = 6
+#
+# Lowered from 6 to 4 for #69. At 6, a muscle on a 14-set weekly target that the
+# planner served with a single movement took the lot in one place -- six sets of
+# squat in one session, where two exercises at three or four sets each is the
+# same volume in a better session. The cap cannot add the second exercise by
+# itself, so the strength planner is told to choose one (rule 3b), and whatever
+# the cap cuts off is still reported through `unmet` rather than hidden.
+MAX_SETS_PER_EXERCISE = 4
 
 # A ceiling on the day, not a target. Sessions are trimmed to fit it and what
 # could not fit is reported rather than silently dropped.

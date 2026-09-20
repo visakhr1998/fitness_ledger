@@ -195,7 +195,7 @@ Two rules, both learned the hard way:
 ## Working here
 
 ```bash
-./.venv/Scripts/python.exe -m pytest              # 617 tests (coach tests skip without the extra)
+./.venv/Scripts/python.exe -m pytest              # 619 tests (coach tests skip without the extra)
 cd frontend && npm run build                      # required after any frontend change
 ./.venv/Scripts/python.exe -m fitness_ledger.cli doctor
 ./.venv/Scripts/python.exe -m fitness_ledger.cli sync
@@ -323,6 +323,12 @@ per plan in `UNDERSTANDING.md` -- and never a looser assertion.
   extra** (`pip install -e ".[coach]"`), so nothing else depends on it: ADK
   declares 25 direct dependencies and resolves to roughly 118 packages. The
   dashboard must keep working without it.
+- **One exercise cannot absorb a muscle's whole weekly target.**
+  `MAX_SETS_PER_EXERCISE` is 4, lowered from 6 on 2026-09-20 for #69: a muscle
+  on a 14-set target that the planner served with one movement took all of it
+  there. The cap alone cannot add a second exercise -- the strength planner is
+  told to choose one (rule 3b) -- and what the cap cuts off stays visible in
+  `unmet` rather than being quietly forgotten.
 - **The agent never emits a number — sets, reps, weights or distances.** It
   chooses exercises and days; `planning.py` computes the rest from the
   tool-reported deficit and the stored `RunningTarget`. Enforced by shape, not
