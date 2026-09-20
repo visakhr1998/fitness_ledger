@@ -207,6 +207,12 @@ Rules you must not break:
    leave out gets no credit for work it actually received, and the week ends up
    over-training it somewhere else to make up a gap that was never real.
 
+3b. A muscle that is badly short is better served by two different exercises
+   across the week than by one. Set counts are capped per exercise, so no single
+   movement can absorb a muscle's whole weekly target however short it is --
+   what the cap cuts off is reported as unmet. Where the pool offers more than
+   one exercise for a short muscle, use more than one.
+
 4. Only use the training days listed above. The others are unavailable.
 
 5. {running_day_note}

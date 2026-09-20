@@ -166,7 +166,7 @@ def test_assembly_allocates_stores_and_reports(repo, tmp_path):
     plan = out["plan"]
 
     assert plan.id is not None
-    assert plan.sessions[0].exercises[0].sets == 6
+    assert plan.sessions[0].exercises[0].sets == 4  # the per-exercise ceiling
     assert out["problems"] == []
     # calves had a deficit and nothing trains it -- said, not swallowed.
     assert out["unplaced"] == ["calves"]

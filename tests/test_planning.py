@@ -89,6 +89,26 @@ def test_no_exercise_gets_more_than_the_per_exercise_ceiling():
     assert session.exercises[0].sets == MAX_SETS_PER_EXERCISE
 
 
+def test_two_exercises_deliver_what_one_cannot():
+    """#69. A single movement cannot absorb a muscle's whole weekly target, so
+    covering a 14-set target means choosing more than one exercise for it."""
+    one = [lift(MON, ("a", ["chest"]))]
+    two = [lift(MON, ("a", ["chest"])), lift(WED, ("b", ["chest"]))]
+
+    assert allocate(one, {"chest": 14}).total_sets == MAX_SETS_PER_EXERCISE
+    assert allocate(two, {"chest": 14}).total_sets == 2 * MAX_SETS_PER_EXERCISE
+
+
+def test_what_the_per_exercise_ceiling_cuts_off_is_reported():
+    """The cap trims the week; it must not quietly shrink the shortfall."""
+    week = [lift(MON, ("a", ["chest"]))]
+
+    result = allocate(week, {"chest": 14}, deficits={"chest": 14})
+
+    assert result.sessions[0].exercises[0].sets == MAX_SETS_PER_EXERCISE
+    assert result.unmet["chest"] == 14 - MAX_SETS_PER_EXERCISE
+
+
 def test_a_tiny_deficit_still_earns_a_real_exercise():
     """A single set of something is not what anyone meant."""
     week = [lift(MON, ("a", ["chest"]))]
@@ -172,7 +192,7 @@ def test_a_deficit_too_big_for_the_week_is_reported_as_still_short():
     result = allocate(week, {"chest": 20}, deficits={"chest": 20})
 
     assert result.sessions[0].exercises[0].sets == MAX_SETS_PER_EXERCISE
-    assert result.unmet["chest"] == pytest.approx(14.0)
+    assert result.unmet["chest"] == pytest.approx(20.0 - MAX_SETS_PER_EXERCISE)
 
 
 def test_a_met_deficit_reports_nothing_outstanding():
@@ -274,10 +294,15 @@ def test_a_consistent_week_is_not_punished():
     far behind you fell -- it was never the amount to train."""
     week = [lift(MON, ("a", ["chest"])), lift(WED, ("b", ["chest"]))]
 
+    # Two exercises, both at the per-exercise ceiling: 14 is more than two
+    # movements can hold. What is under test is that the number does not move
+    # with `trained` -- the deficit ranks, it does not set the amount.
     for trained in (0, 10, 13, 14):
         short = max(14 - trained, 0)
         result = allocate(week, {"chest": 14}, deficits={"chest": short} if short else {})
-        assert result.total_sets == 12, f"trained {trained}: {result.total_sets}"
+        assert result.total_sets == 2 * MAX_SETS_PER_EXERCISE, (
+            f"trained {trained}: {result.total_sets}"
+        )
 
 
 def test_nothing_short_still_earns_a_full_week():
@@ -296,7 +321,7 @@ def test_a_muscle_the_week_ignores_gets_nothing_allocated():
 
     result = allocate(week, {"chest": 12, "quadriceps": 14})
 
-    assert result.total_sets == 6  # chest only, capped per exercise
+    assert result.total_sets == MAX_SETS_PER_EXERCISE  # chest only, capped
 
 
 def test_the_ceiling_takes_from_whatever_is_least_behind():
@@ -304,7 +329,9 @@ def test_the_ceiling_takes_from_whatever_is_least_behind():
     choose. A set removed from a muscle already on target costs less than one
     removed from a muscle three weeks neglected."""
     week = [lift(MON, ("neglected", ["lats"]), ("fine", ["chest"]))]
-    prefs = Preferences(max_sets_per_session=8)
+    # Tight enough that the two exercises cannot both sit at the ceiling, so
+    # the session is actually forced to choose between them.
+    prefs = Preferences(max_sets_per_session=2 * MAX_SETS_PER_EXERCISE - 2)
 
     result = allocate(
         week,
