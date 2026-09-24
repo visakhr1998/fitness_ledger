@@ -60,6 +60,25 @@ fit.
 When the week is too tight, things are given up in this order: **volume per
 muscle group → hitting every muscle → runs on track → number of sessions.**
 
+**A week that breaks a hard rule is planned again, not stored.** The hard rules
+are the ones `planning.validate` checks: training days only, the set ceilings,
+the exercise pool, rest between sessions for the same muscle, no run the day
+after legs (unless the setting allows it), and the standing weekly constraints
+from the Goals screen. The next attempt is told what the last one broke. Out of
+attempts (`COACH_MAX_PLAN_ATTEMPTS`), the week with the fewest violations is
+kept and shown with them. A week with no training in it is never stored; the
+status reports the failure instead.
+
+**After a break, targets ramp back up.** Two or more weeks with no lifting
+logged, with training before them, count as a break. The first week back
+plans a fraction of the weekly target (half after four or more weeks off),
+rising over the next weeks (`planning.ramp`). This is arithmetic, not a prompt
+instruction, and the trade-offs say so.
+
+**Last week's exercises are kept where they can be,** because progress on a
+lift is only readable if it recurs. The planner is shown last week's plan and
+asked to reuse it, and the trade-offs report how many exercises were kept.
+
 Plans are append-only — a revision is a new row pointing at the old one.
 
 Generating one takes about 3 model requests and tens of seconds, so it runs in

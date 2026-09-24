@@ -504,6 +504,10 @@ def plan_section(
             pool_ids=catalog or None,
             training_days=(week_days - lost) or None,
             preferences=preferences,
+            # Current constraints, not the ones at generation time, for the
+            # same reason as preferences: a rule added after the plan was drawn
+            # should flag the plan that now breaks it (#70).
+            constraints=repo.get_constraints(),
         ) + empty_week(plan.sessions, sorted(week_days - lost)),
         "adherence": {
             "not_started": followed.not_started,

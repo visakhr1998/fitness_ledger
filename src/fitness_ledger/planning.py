@@ -20,10 +20,11 @@ stay testable without one.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from datetime import date
 
-from .models import PlannedExercise, PlannedSession
+from .models import PlannedExercise, PlannedSession, RecurringConstraint
 
 # An exercise is worth doing properly or not at all: one set of something is
 # almost never what was intended, and a plan full of singles reads as noise.
@@ -60,7 +61,14 @@ class Preferences:
     # back-to-back days are a violation; 0 disables the check.
     min_rest_days_same_muscle: int = 1
     # Whether a run may sit on the day after a session that trained legs.
-    allow_run_after_leg_day: bool = True
+    #
+    # False since #61. It defaulted to True, which switched the check off --
+    # while the running planner's prompt described the rule anyway, so the model
+    # wrote "a preference violation but unavoidable" about a week the config
+    # allowed and that had a clean arrangement available. Off by default was
+    # also the only safe setting while a violation was stored rather than
+    # re-planned; `_ask_until_usable` now re-asks (#56), so the rule can be on.
+    allow_run_after_leg_day: bool = False
 
 
 LEG_MUSCLES = frozenset({"quadriceps", "hamstrings", "glutes", "calves"})
@@ -310,6 +318,149 @@ def _fit_session(
     return counts
 
 
+# --- coming back from a break (#62) -----------------------------------------
+
+# Weeks with no lifting logged before they count as a break rather than a busy
+# week. One empty week is life; two in a row is a layoff worth ramping from.
+LAYOFF_WEEKS = 2
+
+# From this many empty weeks on, a break is long: detraining is real and the
+# first week back starts lower.
+LONG_LAYOFF_WEEKS = 4
+
+# Fraction of the weekly target for the first, second, ... week back. Index 0 is
+# the first week planned after the break. Past the end of the tuple the full
+# target applies. Deliberately coarse -- the point is not to prescribe a return
+# protocol but to stop "60 sets in the first week after two months off"
+# reading as "nothing sacrificed".
+RAMP_AFTER_LONG_BREAK = (0.5, 0.65, 0.8)
+RAMP_AFTER_SHORT_BREAK = (0.7, 0.85)
+
+
+@dataclass(frozen=True)
+class Ramp:
+    """How much of the weekly target this week should carry.
+
+    `factor` scales the target before allocation. 1.0 is a normal week.
+    """
+
+    factor: float = 1.0
+    break_weeks: int = 0
+    weeks_back: int = 0
+
+    @property
+    def active(self) -> bool:
+        return self.factor < 1.0
+
+    def note(self) -> str:
+        """The sentence the planner and the trade-offs carry. Empty when inactive."""
+        if not self.active:
+            return ""
+        which = (
+            "the first week back"
+            if self.weeks_back == 0
+            else f"week {self.weeks_back + 1} back"
+        )
+        return (
+            f"Targets are at {round(self.factor * 100)}% for {which} after"
+            f" {self.break_weeks} weeks with no lifting logged, rising to the full"
+            " target over the next weeks."
+        )
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "factor": self.factor,
+            "break_weeks": self.break_weeks,
+            "weeks_back": self.weeks_back,
+            "note": self.note(),
+        }
+
+
+def ramp(trained: list[bool]) -> Ramp:
+    """The ramp for the week after `trained`, a flag per week, oldest first.
+
+    The last flag is the week just before the one being planned (the current,
+    possibly part-finished week counts: a session in it is a week back). The
+    most recent run of at least `LAYOFF_WEEKS` empty weeks is the break;
+    trained weeks after it are the weeks already back.
+
+    **No training before the break means no ramp.** A window that is empty from
+    its first week cannot tell a layoff from a ledger that simply starts there
+    -- a new user, or a sync that has not run -- and scaling a newcomer's week
+    by half on no evidence would be the invented number this module exists to
+    prevent.
+    """
+    weeks_back = 0
+    index = len(trained) - 1
+    while index >= 0:
+        if trained[index]:
+            weeks_back += 1
+            index -= 1
+            continue
+        empty = 0
+        while index >= 0 and not trained[index]:
+            empty += 1
+            index -= 1
+        if empty >= LAYOFF_WEEKS:
+            if index < 0:
+                return Ramp()  # nothing before the gap: no evidence of a break
+            schedule = (
+                RAMP_AFTER_LONG_BREAK if empty >= LONG_LAYOFF_WEEKS else RAMP_AFTER_SHORT_BREAK
+            )
+            if weeks_back >= len(schedule):
+                return Ramp()
+            return Ramp(factor=schedule[weeks_back], break_weeks=empty, weeks_back=weeks_back)
+        # A single empty week is not a break. Its weeks are not "weeks back"
+        # either -- keep walking to find the break, if there is one.
+    return Ramp()
+
+
+# --- week-to-week continuity (#63) --------------------------------------------
+
+
+@dataclass(frozen=True)
+class Continuity:
+    """How much of last week's exercise selection this week kept."""
+
+    kept: tuple[str, ...] = ()
+    dropped: tuple[str, ...] = ()
+    added: tuple[str, ...] = ()
+
+    @property
+    def previous(self) -> int:
+        return len(self.kept) + len(self.dropped)
+
+    def note(self) -> str:
+        if not self.previous:
+            return ""
+        line = f"Kept {len(self.kept)} of {self.previous} exercises from last week's plan."
+        if self.dropped:
+            line += f" Dropped: {', '.join(self.dropped)}."
+        return line
+
+
+def continuity(
+    previous: dict[str, str], planned: tuple[PlannedSession, ...]
+) -> Continuity:
+    """Compare last week's exercises (id -> title) with this week's.
+
+    Measured rather than trusted. Two plans from identical state shared less
+    than half their exercises, and progress on a lift cannot be read if the
+    lift is not there next week; the planner is now asked to keep them, and
+    this is how anyone can tell whether it did.
+    """
+    now = {
+        exercise.exercise_template_id: exercise.title
+        for session in planned
+        for exercise in session.exercises
+    }
+    return Continuity(
+        kept=tuple(sorted(previous[i] for i in previous if i in now)),
+        dropped=tuple(sorted(previous[i] for i in previous if i not in now)),
+        added=tuple(sorted(now[i] for i in now if i not in previous)),
+    )
+
+
 # --- validation -------------------------------------------------------------
 
 
@@ -319,6 +470,7 @@ def validate(
     pool_ids: set[str] | None = None,
     training_days: set[str] | None = None,
     preferences: Preferences | None = None,
+    constraints: list[RecurringConstraint] | tuple[RecurringConstraint, ...] = (),
 ) -> list[str]:
     """Hard constraints. Returns one readable line per violation, empty if clean.
 
@@ -353,6 +505,57 @@ def validate(
 
     problems += _rest_violations(sessions, prefs)
     problems += _run_adjacency_violations(sessions, prefs)
+    problems += _standing_violations(sessions, constraints)
+    return problems
+
+
+# A run focus that is not easy running. The planner labels a run with free text
+# ("easy", "long", "intervals"), and there is no structured intensity yet, so
+# `no_intervals` is checked against the label: a day that allows easy running
+# only must not carry a session named as a hard one. Matched as word stems so
+# "Tempo run" and "hill repeats" are caught along with the bare words.
+HARD_RUN_WORDS = re.compile(
+    r"\b(interval|tempo|threshold|hill|repeat|speed|fartlek|track|vo2|race|hard)",
+    re.IGNORECASE,
+)
+
+
+def _standing_violations(
+    sessions: tuple[PlannedSession, ...],
+    constraints: list[RecurringConstraint] | tuple[RecurringConstraint, ...],
+) -> list[str]:
+    """A session on a weekday the user has ruled it out for (#70).
+
+    The constraint was saved, shown on the Goals screen and ignored: nothing
+    handed it to the planners and nothing here checked it, so a knee rule for
+    Wednesdays stood beside a plan with a Wednesday run. The prompt now carries
+    the rule too, but a prompt can be ignored and this cannot.
+    """
+    problems = []
+    for session in sessions:
+        for rule in constraints:
+            if session.local_date.weekday() != rule.weekday:
+                continue
+            said = f" ({rule.reason})" if rule.reason else ""
+            if session.kind == "run" and rule.kind == "no_high_impact":
+                problems.append(
+                    f"a run is planned for {session.local_date}, a {rule.weekday_name}, "
+                    f"where running is ruled out{said}"
+                )
+            elif (
+                session.kind == "run"
+                and rule.kind == "no_intervals"
+                and HARD_RUN_WORDS.search(session.focus or "")
+            ):
+                problems.append(
+                    f"a {session.focus!r} run is planned for {session.local_date}, a "
+                    f"{rule.weekday_name}, where only easy running is allowed{said}"
+                )
+            elif session.kind == "lift" and rule.kind == "no_lifting" and session.exercises:
+                problems.append(
+                    f"lifting is planned for {session.local_date}, a {rule.weekday_name}, "
+                    f"where lifting is ruled out{said}"
+                )
     return problems
 
 

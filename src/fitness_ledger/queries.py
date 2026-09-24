@@ -16,7 +16,7 @@ from .config import Config
 from .db import SQLiteRepository
 from .insights import detect
 from .models import WORKING_SET_TYPES, Goal, Plan, VolumeTarget
-from .planning import Adherence, Preferences, adherence
+from .planning import Adherence, Preferences, Ramp, adherence, ramp
 from .progression import RepRange, main_lifts, progression_state, stalled
 from .volume import (
     best_reps_per_session,
@@ -450,6 +450,22 @@ def planning_preferences(repo: SQLiteRepository) -> Preferences:
             "0", "false", "no", "off"
         }
     return Preferences(**values)
+
+
+# How far back to look for a break. Long enough to see training before the
+# longest layoff the ramp schedule still acts on.
+RAMP_LOOKBACK_WEEKS = 16
+
+
+def training_ramp(repo: SQLiteRepository, config: Config) -> Ramp:
+    """Whether next week follows a break from lifting, and how far back in (#62).
+
+    The gathering half: one flag per week from the logged workouts, handed to
+    the pure `planning.ramp`. The current week is included, part-finished as it
+    is -- a session logged in it is a session back.
+    """
+    rows = volume_trend(repo, config, weeks=RAMP_LOOKBACK_WEEKS, include_current=True)["weeks"]
+    return ramp([row["workouts"] > 0 for row in rows])
 
 
 def plan_adherence(repo: SQLiteRepository, plan: Plan | None) -> Adherence:

@@ -406,6 +406,10 @@ async def cmd_plan(config: Config, args: argparse.Namespace) -> int:
 
     print()
     print("  (proposed only -- nothing written to Hevy)")
+    # An empty week is reported and never stored (#55). Exit non-zero so a
+    # scheduled run can tell a failure to plan from a week that was planned.
+    if not args.dry_run and not assembled["stored"]:
+        return 1
     return 0
 
 
