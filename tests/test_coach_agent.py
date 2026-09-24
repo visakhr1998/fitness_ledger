@@ -611,11 +611,12 @@ def test_an_empty_proposal_is_asked_again(monkeypatch):
     calls = []
     answers = [_result([]), _result([]), _result([{"session_date": "2026-09-07"}])]
 
-    async def fake(repo, config, week_start=None, model=None, on_fallback=None):
+    async def fake(repo, config, week_start=None, model=None, on_fallback=None, **_):
         calls.append(1)
         return answers[len(calls) - 1]
 
     monkeypatch.setattr(agent, "_run_coach", fake)
+    monkeypatch.setattr(agent, "hard_problems", lambda repo, config, result: [])
     config = replace(Config.load(), coach_max_plan_attempts=3)
 
     out = asyncio.run(agent._ask_until_usable(None, config, None))
@@ -633,11 +634,12 @@ def test_a_usable_answer_is_not_asked_again(monkeypatch):
 
     calls = []
 
-    async def fake(repo, config, week_start=None, model=None, on_fallback=None):
+    async def fake(repo, config, week_start=None, model=None, on_fallback=None, **_):
         calls.append(1)
         return _result([{"session_date": "2026-09-07"}])
 
     monkeypatch.setattr(agent, "_run_coach", fake)
+    monkeypatch.setattr(agent, "hard_problems", lambda repo, config, result: [])
 
     out = asyncio.run(
         agent._ask_until_usable(None, replace(Config.load(), coach_max_plan_attempts=3), None)
@@ -657,11 +659,12 @@ def test_a_week_with_no_training_days_is_not_asked_again(monkeypatch):
 
     calls = []
 
-    async def fake(repo, config, week_start=None, model=None, on_fallback=None):
+    async def fake(repo, config, week_start=None, model=None, on_fallback=None, **_):
         calls.append(1)
         return _result([], days=())
 
     monkeypatch.setattr(agent, "_run_coach", fake)
+    monkeypatch.setattr(agent, "hard_problems", lambda repo, config, result: [])
 
     asyncio.run(
         agent._ask_until_usable(None, replace(Config.load(), coach_max_plan_attempts=3), None)
@@ -678,10 +681,11 @@ def test_running_out_of_attempts_returns_the_empty_week(monkeypatch):
     from fitness_ledger.coach import agent
     from fitness_ledger.config import Config
 
-    async def fake(repo, config, week_start=None, model=None, on_fallback=None):
+    async def fake(repo, config, week_start=None, model=None, on_fallback=None, **_):
         return _result([])
 
     monkeypatch.setattr(agent, "_run_coach", fake)
+    monkeypatch.setattr(agent, "hard_problems", lambda repo, config, result: [])
 
     out = asyncio.run(
         agent._ask_until_usable(None, replace(Config.load(), coach_max_plan_attempts=2), None)
@@ -689,6 +693,68 @@ def test_running_out_of_attempts_returns_the_empty_week(monkeypatch):
 
     assert out["attempts"] == 2
     assert out["proposal"]["sessions"] == []
+
+
+def test_a_week_that_breaks_a_hard_rule_is_planned_again_and_told_why(monkeypatch):
+    """#56: `validate` found three rest violations and the week was stored
+    anyway. A broken hard rule is now another kind of unusable -- and the
+    next attempt is told what broke, because at temperature 0 the same prompt
+    mostly returns the same week."""
+    from dataclasses import replace
+
+    from fitness_ledger.coach import agent
+    from fitness_ledger.config import Config
+
+    seen_feedback = []
+    verdicts = [["chest is trained on 2026-09-11 and again on 2026-09-12, 1 day apart"], []]
+
+    async def fake(repo, config, week_start=None, model=None, on_fallback=None,
+                   rejected_problems=None):
+        seen_feedback.append(list(rejected_problems or []))
+        return _result([{"session_date": "2026-09-07"}])
+
+    monkeypatch.setattr(agent, "_run_coach", fake)
+    monkeypatch.setattr(
+        agent, "hard_problems", lambda repo, config, result: verdicts[len(seen_feedback) - 1]
+    )
+
+    out = asyncio.run(
+        agent._ask_until_usable(None, replace(Config.load(), coach_max_plan_attempts=3), None)
+    )
+
+    assert out["attempts"] == 2
+    assert seen_feedback == [[], verdicts[0]]
+    assert out["rejected_attempts"] == [verdicts[0]]
+    assert out["problems"] == []
+
+
+def test_out_of_attempts_the_week_with_fewest_violations_is_kept(monkeypatch):
+    """Refusing to plan at all would leave no week; the least-broken one is
+    returned with its problems, which `assemble` stores beside it."""
+    from dataclasses import replace
+
+    from fitness_ledger.coach import agent
+    from fitness_ledger.config import Config
+
+    calls = []
+    verdicts = [["a", "b"], ["c"], ["d", "e", "f"]]
+
+    async def fake(repo, config, week_start=None, model=None, on_fallback=None, **_):
+        calls.append(1)
+        return _result([{"session_date": "2026-09-07", "n": len(calls)}])
+
+    monkeypatch.setattr(agent, "_run_coach", fake)
+    monkeypatch.setattr(
+        agent, "hard_problems", lambda repo, config, result: verdicts[len(calls) - 1]
+    )
+
+    out = asyncio.run(
+        agent._ask_until_usable(None, replace(Config.load(), coach_max_plan_attempts=3), None)
+    )
+
+    assert out["attempts"] == 2
+    assert out["problems"] == ["c"]
+    assert out["rejected_attempts"] == verdicts
 
 
 def test_the_running_planner_can_tell_a_leg_day_from_an_upper_day():

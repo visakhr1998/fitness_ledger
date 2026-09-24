@@ -14,11 +14,16 @@ from datetime import date
 
 import pytest
 
+from fitness_ledger.models import RecurringConstraint
 from fitness_ledger.planning import (
     MAX_SETS_PER_EXERCISE,
     MIN_SETS_PER_EXERCISE,
+    RAMP_AFTER_LONG_BREAK,
+    RAMP_AFTER_SHORT_BREAK,
     Preferences,
     allocate,
+    continuity,
+    ramp,
     validate,
 )
 
@@ -269,9 +274,64 @@ def test_a_run_after_leg_day_is_caught_only_when_disallowed():
         {"quadriceps": 6},
     ).sessions
 
-    assert validate(week) == []
-    [problem] = validate(week, preferences=Preferences(allow_run_after_leg_day=False))
+    [problem] = validate(week)
     assert "run" in problem and "leg session" in problem
+    assert validate(week, preferences=Preferences(allow_run_after_leg_day=True)) == []
+
+
+def test_run_after_legs_is_checked_by_default():
+    """#61: the default switched the check off while the running prompt still
+    described the rule, so the model reported breaking a rule nothing held."""
+    assert Preferences().allow_run_after_leg_day is False
+
+
+# --- standing weekly constraints (#70) ---------------------------------------
+
+
+def _run_on(day: date, focus: str = "easy") -> dict:
+    return {**run(day), "focus": focus}
+
+
+def test_a_run_on_a_no_high_impact_day_is_a_violation():
+    """The knee rule was saved and shown, and a Wednesday run was stored
+    beside it with no warning."""
+    knee = RecurringConstraint(weekday=WED.weekday(), kind="no_high_impact", reason="knee")
+    week = allocate([_run_on(WED)], {}).sessions
+
+    [problem] = validate(week, constraints=[knee])
+
+    assert str(WED) in problem and "Wednesday" in problem and "knee" in problem
+
+
+def test_a_lift_on_a_no_high_impact_day_is_allowed():
+    """A constraint narrows what a day holds; it does not remove the day."""
+    knee = RecurringConstraint(weekday=WED.weekday(), kind="no_high_impact")
+    week = allocate([lift(WED, ("bench", ["chest"]))], {"chest": 6}).sessions
+
+    assert validate(week, constraints=[knee]) == []
+
+
+def test_no_intervals_allows_an_easy_run_and_refuses_a_hard_one():
+    easy_only = RecurringConstraint(weekday=WED.weekday(), kind="no_intervals")
+
+    assert validate(allocate([_run_on(WED, "easy")], {}).sessions, constraints=[easy_only]) == []
+    for focus in ("intervals", "Tempo run", "hill repeats"):
+        week = allocate([_run_on(WED, focus)], {}).sessions
+        assert len(validate(week, constraints=[easy_only])) == 1, focus
+
+
+def test_a_lift_on_a_no_lifting_day_is_a_violation():
+    rest = RecurringConstraint(weekday=MON.weekday(), kind="no_lifting")
+    week = allocate([lift(MON, ("bench", ["chest"])), _run_on(MON)], {"chest": 6}).sessions
+
+    [problem] = validate(week, constraints=[rest])
+
+    assert "lifting" in problem and str(MON) in problem
+
+
+def test_a_constraint_on_another_weekday_changes_nothing():
+    knee = RecurringConstraint(weekday=FRI.weekday(), kind="no_high_impact")
+    assert validate(allocate([_run_on(WED)], {}).sessions, constraints=[knee]) == []
 
 
 def test_validation_reports_every_problem_not_just_the_first():
@@ -397,3 +457,67 @@ def test_an_empty_week_with_no_available_days_is_correct():
     from fitness_ledger.planning import empty_week
 
     assert empty_week((), []) == []
+
+
+# --- coming back from a break (#62) --------------------------------------------
+
+T, E = True, False
+
+
+def test_no_break_means_the_full_target():
+    assert ramp([T] * 12).factor == 1.0
+
+
+def test_a_single_empty_week_is_not_a_break():
+    assert ramp([T, T, E, T, T]).factor == 1.0
+
+
+def test_the_first_week_after_a_long_break_is_at_half():
+    """#62: 60 sets planned for the first week after two months off, with
+    "Nothing sacrificed this week"."""
+    result = ramp([T] * 4 + [E] * 9)
+
+    assert result.factor == RAMP_AFTER_LONG_BREAK[0]
+    assert (result.break_weeks, result.weeks_back) == (9, 0)
+    assert "9 weeks with no lifting" in result.note()
+
+
+def test_the_ramp_rises_with_each_week_back_and_then_ends():
+    base = [T] * 4 + [E] * 9
+    factors = [ramp(base + [T] * back).factor for back in range(5)]
+
+    assert factors == [*RAMP_AFTER_LONG_BREAK, 1.0, 1.0]
+
+
+def test_a_short_break_ramps_less():
+    assert ramp([T] * 4 + [E] * 2).factor == RAMP_AFTER_SHORT_BREAK[0]
+
+
+def test_no_training_before_the_gap_is_not_evidence_of_a_break():
+    """A ledger that starts empty is a new user or an unsynced one; halving
+    their week on no evidence would be an invented number."""
+    assert ramp([E] * 10 + [T]).factor == 1.0
+    assert ramp([E] * 6).factor == 1.0
+    assert ramp([]).factor == 1.0
+
+
+# --- continuity (#63) -----------------------------------------------------------
+
+
+def test_continuity_names_what_was_kept_and_dropped():
+    """Two plans from identical state shared under half their exercises; the
+    turnover is now measured, not guessed at."""
+    week = allocate(
+        [lift(MON, ("bench", ["chest"]), ("row", ["lats"]))], {"chest": 6, "lats": 6}
+    ).sessions
+
+    result = continuity({"bench": "Bench", "squat": "Squat"}, week)
+
+    assert result.kept == ("Bench",)
+    assert result.dropped == ("Squat",)
+    assert result.added == ("Row",)
+    assert result.note() == "Kept 1 of 2 exercises from last week's plan. Dropped: Squat."
+
+
+def test_no_previous_plan_says_nothing():
+    assert continuity({}, ()).note() == ""

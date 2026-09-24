@@ -26,6 +26,8 @@ from typing import Any
 
 from ..config import Config
 from ..db import SQLiteRepository
+from ..models import WEEKDAY_NAMES
+from ..queries import planning_preferences, training_ramp
 from .tools import build_tools
 
 # One complete week is what a one-week plan is measured against: over
@@ -49,8 +51,11 @@ STATE_KEYS = (
     "goals",
     "ledger_state",
     "availability",
+    "constraints",
+    "preferences",
     "exercise_pool",
     "previous_plan",
+    "last_week_exercises",
 )
 
 
@@ -95,10 +100,43 @@ def gather_context(
             "runs_last_week": tools["get_recent_runs"](PLANNING_WINDOW),
             "recovery": tools["get_recovery_signals"](RECOVERY_WINDOW),
             "insights": tools["get_insights"](),
+            # Whether this week follows a break from lifting (#62). Carried in
+            # ledger_state so the assembler scales the same targets the planner
+            # was told were scaled.
+            "ramp": training_ramp(repo, config).as_dict(),
         },
         "availability": tools["get_availability"](week.isoformat()),
+        # Standing weekly rules. Saved and shown on the Goals screen for weeks
+        # before anything handed them to a planner (#70).
+        "constraints": tools["get_constraints"](),
+        # The settings `validate` will hold the week to, so the prompts can
+        # describe the rules the config actually has. The running prompt used
+        # to describe run-after-legs as a rule while the config switched it
+        # off, and the model reported violating a rule that did not exist (#61).
+        "preferences": {
+            "allow_run_after_leg_day": planning_preferences(repo).allow_run_after_leg_day,
+        },
         "exercise_pool": covering_pool(tools, volume),
         "previous_plan": tools["get_previous_plan"](),
+        "last_week_exercises": last_week_exercises(repo, week),
+    }
+
+
+def last_week_exercises(repo: SQLiteRepository, week: date) -> dict[str, str]:
+    """The exercises the plan for the week before this one used, id -> title (#63).
+
+    Not `previous_plan`, which is the latest plan of *any* week -- after a
+    replan that is this week's own earlier draft, and keeping a draft's
+    exercises says nothing about progression. Progress is read week to week, so
+    the comparison is with last week's plan. Empty when there was none.
+    """
+    plan = repo.latest_plan(week - timedelta(days=7))
+    if plan is None:
+        return {}
+    return {
+        exercise.exercise_template_id: exercise.title
+        for session in plan.sessions
+        for exercise in session.exercises
     }
 
 
@@ -329,7 +367,118 @@ def derive_summaries(context: dict[str, Any]) -> dict[str, Any]:
         "progression_summary": progression_summary(context),
         "running_day_note": running_day_note(context),
         "running_deficit_summary": running_deficit_summary(context),
+        "constraints_summary": constraints_summary(context),
+        "run_after_legs_rule": run_after_legs_rule(context),
+        "replan_note": replan_note(context),
+        "ramp_note": ramp_note(context),
+        "continuity_exercises": continuity_exercises(context),
     }
+
+
+CONSTRAINT_WORDS = {
+    "no_high_impact": "no running or jumping",
+    "no_lifting": "no lifting",
+    "no_intervals": "easy running only, no hard efforts",
+}
+
+
+def constraints_summary(context: dict[str, Any]) -> str:
+    """Standing weekly rules, rendered as the dates they fall on this week.
+
+    Dates rather than weekday numbers, because turning "weekday 2" into
+    2026-09-23 is arithmetic, and the planners are handed every date they need
+    rather than asked to derive one. A day already lost to availability is
+    left out: there is nothing to restrict on a day nobody trains.
+    """
+    rules = context.get("constraints") or []
+    if not rules:
+        return "  (none)"
+
+    week = date.fromisoformat(context["week_start"])
+    trainable = set(training_days(context))
+    lines = []
+    for rule in sorted(rules, key=lambda r: r["weekday"]):
+        day = (week + timedelta(days=rule["weekday"])).isoformat()
+        if day not in trainable:
+            continue
+        reason = f" -- {rule['reason']}" if rule.get("reason") else ""
+        lines.append(
+            f"  {day} ({WEEKDAY_NAMES[rule['weekday']]}):"
+            f" {CONSTRAINT_WORDS.get(rule['kind'], rule['kind'])}{reason}"
+        )
+    return "\n".join(lines) or "  (none that fall on a training day this week)"
+
+
+def run_after_legs_rule(context: dict[str, Any]) -> str:
+    """The run-after-legs line, stated as the config has it (#61).
+
+    The prompt used to call this a preference while the config called it
+    allowed, and the model reported "a preference violation but unavoidable"
+    on a week with a clean arrangement free. Now the prompt says whichever is
+    true, because `validate` checks exactly that.
+    """
+    allowed = ((context.get("preferences") or {}).get("allow_run_after_leg_day"))
+    if allowed:
+        return (
+            "A run the day after a leg session is allowed. Prefer not to put a"
+            " hard run there, but it is not a rule."
+        )
+    return (
+        "Never put a run on the day after a lifting day with leg work. This is a"
+        " hard rule and the week is checked against it: a week that breaks it is"
+        " rejected and planned again. If no free day is left that follows it,"
+        " place fewer runs and say so in trade_offs."
+    )
+
+
+def replan_note(context: dict[str, Any]) -> str:
+    """Why the previous attempt at this week was rejected, if it was (#56).
+
+    A week that breaks a hard rule is planned again rather than stored, and
+    re-asking with the same prompt at temperature 0 mostly returns the same
+    week. Naming the violations is what gives the next attempt something to
+    change.
+    """
+    problems = context.get("rejected_problems") or []
+    if not problems:
+        return ""
+    listed = "\n".join(f"  - {problem}" for problem in problems)
+    return (
+        "\nA previous attempt at this week was rejected because it broke these"
+        f" rules:\n{listed}\nPlan the week again so that none of them happens.\n"
+    )
+
+
+def ramp_note(context: dict[str, Any]) -> str:
+    """The ramp after a break, for the rationale (#62), or the absence of one.
+
+    Stated because the deficit table above it still reads against the full
+    target: after two months off every muscle is a full target short, and a
+    planner told only that would call a half-volume week a sacrifice.
+    """
+    ramp = ((context.get("ledger_state") or {}).get("ramp")) or {}
+    if not ramp.get("note"):
+        return "No break from lifting in recent weeks; set counts follow the full weekly target."
+    return (
+        f"{ramp['note']} Set counts are worked out from the reduced target after"
+        " you; mention the ramp in the rationale, and do not describe the lower"
+        " volume as a sacrifice in trade_offs."
+    )
+
+
+def continuity_exercises(context: dict[str, Any]) -> str:
+    """Last week's exercises, rendered for rule 3c (#63)."""
+    last = context.get("last_week_exercises") or {}
+    if not last:
+        return "  (no plan for last week, so nothing to keep)"
+    pool = {
+        row.get("exercise_template_id") or row.get("id")
+        for row in context.get("exercise_pool") or []
+    }
+    return "\n".join(
+        f"  {template_id}  {title}" + ("" if template_id in pool else "  (not in this week's pool)")
+        for template_id, title in sorted(last.items(), key=lambda item: item[1])
+    )
 
 
 def running_deficit_summary(context: dict[str, Any]) -> str:
@@ -417,8 +566,16 @@ def training_days(context: dict[str, Any]) -> list[str]:
     ]
 
 
-def build_context_reader(repo: SQLiteRepository, config: Config, week_start: date | None = None):
+def build_context_reader(
+    repo: SQLiteRepository,
+    config: Config,
+    week_start: date | None = None,
+    rejected_problems: list[str] | None = None,
+):
     """ADK adapter: publish `gather_context` to session state.
+
+    `rejected_problems` are the hard-rule violations of a previous attempt at
+    the same week, rendered into the instructions by `replan_note`.
 
     Imported lazily so this module stays usable -- and testable -- without the
     optional `coach` extra installed.
@@ -431,6 +588,7 @@ def build_context_reader(repo: SQLiteRepository, config: Config, week_start: dat
 
         async def _run_async_impl(self, ctx):  # noqa: ANN001 - ADK's signature
             state = gather_context(repo, config, week_start)
+            state["rejected_problems"] = list(rejected_problems or [])
             state.update(derive_summaries(state))
             yield Event(
                 author=self.name,
