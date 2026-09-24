@@ -1,36 +1,39 @@
 # Security
 
-This is a single-user application you run on your own machine. There is no
-hosted service, no accounts, and no version-support matrix — you run whatever
-you last pulled.
+Fitness ledger is a single-user application that runs on your own machine.
+There is no hosted service and there are no user accounts. Only the latest
+version on `main` is supported.
 
-## Where your data lives
+## Where your data is stored
 
-- **Your training history** is in a local SQLite file under `data/`, which is
-  git-ignored. It never leaves your machine unless you send it somewhere.
-- **Your Hevy API key** lives in the hevy-mcp server's own `.env`, not here.
-- **Your Google OAuth token** lives in the health server's own token file, not
-  here.
-- **This repo's `.env`** holds file paths and settings only. If you find a
-  credential in a commit, that is a bug — please report it.
+| Data | Location |
+|---|---|
+| Training history | A local SQLite database under `data/`, which is git-ignored |
+| Hevy API key | The hevy-mcp server's own `.env` file |
+| Google OAuth token | The Google Health server's own token file |
+| This repository's `.env` | File paths and settings only |
 
-Two things do leave your machine, and only if you opt in:
+A credential committed to this repository would be a bug. Please report it.
 
-- **The chat box and the planner** send your training figures and your questions
-  to whichever model provider you configure. Setting `LLM_PROVIDER=ollama` keeps
-  this local. See [docs/model-providers.md](docs/model-providers.md).
-- **Hevy write-back** sends a routine you have explicitly confirmed. Nothing is
-  sent without that confirmation, and Hevy has no delete endpoint, so anything
-  written must be removed by hand in the app.
+## Data that leaves your machine
 
-## Reporting something
+Data is sent elsewhere only if you enable these features:
+
+- **Model features.** The chat box, Goals box and planner send your training
+  figures, and anything you type into them, to the model provider you configure.
+  Set `LLM_PROVIDER=ollama` to keep this on your machine. See
+  [docs/model-providers.md](docs/model-providers.md).
+- **Hevy write-back.** A routine is sent to Hevy only after you confirm it. Hevy
+  has no delete endpoint, so a routine that has been written must be removed by
+  hand in the Hevy app.
+
+## Reporting a vulnerability
 
 Open an issue at
 [github.com/visakhr1998/fitness_ledger/issues](https://github.com/visakhr1998/fitness_ledger/issues).
-If it involves a leaked credential or anything you would rather not post
-publicly, use GitHub's
-[private vulnerability reporting](https://github.com/visakhr1998/fitness_ledger/security/advisories/new)
-instead.
+For a leaked credential, or anything you would rather not report publicly, use
+GitHub's
+[private vulnerability reporting](https://github.com/visakhr1998/fitness_ledger/security/advisories/new).
 
-This is a personal project maintained in spare time — expect a reply in days,
-not hours.
+This is a personal project maintained in spare time, so expect a reply within a
+few days.

@@ -1,71 +1,63 @@
 # Fitness ledger
 
-A personal training tracker. It counts your **effective sets per muscle group
-each week** and compares them against a target, and it tracks your running the
-same way — so you can see when one is quietly eating into the other.
+A personal training tracker for people who both lift and run. It counts
+effective sets per muscle group each week and compares them with a target, and
+it tracks running against a weekly distance, so you can see when one kind of
+training is crowding out the other.
 
-An *effective set* is a working set, warmups excluded. The muscle doing the work
-gets full credit; muscles assisting get half.
+An effective set is a working set (warm-ups are excluded). The muscle doing the
+work gets full credit and assisting muscles get half.
 
-Lifting data comes from Hevy. Runs, sleep and resting heart rate come from
-Google Health. It can also draft next week's training for you to approve.
+Lifting data comes from [Hevy](https://www.hevyapp.com/). Runs, sleep and
+resting heart rate come from Google Health. Everything runs on your own machine.
 
-## What it does
+## Features
 
-- **Tracks volume per muscle group.** Effective sets per week against a target.
-- **Answers questions about your training.** How much chest work did I do last
-  week? What am I neglecting? Is my running getting more efficient?
-- **Measures running efficiency.** Distance adjusted for hills, divided by
-  heartbeats, so a hilly run and a flat one of similar length compare fairly.
-- **Drafts your week.** A planner proposes sessions from your goals, what you've
-  been doing, and which days you have free — and says what it couldn't fit in.
-- **Never changes anything on its own.** Warnings are shown, not acted on.
-  Sending a workout to Hevy needs you to confirm it against a before/after
-  comparison.
+- Weekly volume per muscle group, measured against targets you can edit.
+- Running efficiency: distance adjusted for hills, divided by heartbeats.
+- Warning rules for dropped volume, neglected muscles, stalled lifts and poor
+  sleep. They report; they never change your training.
+- Goals entered in plain English. A sentence such as "sub-4 marathon in
+  November, bench 100 kg, pull-ups from 5 to 10, no running on Wednesdays"
+  becomes goals and weekly rules, which you review before saving.
+- A weekly plan drafted from your goals, recent training and free days. Set
+  counts come from your targets, not from the model, and the draft is checked
+  against your rules before you see it.
+- Optional write-back to Hevy, one day at a time, after you confirm a
+  before/after comparison.
 
-## Do you qualify?
+## Requirements
 
-- A **Hevy Pro** subscription. The API key is Pro-only, generated at
-  [hevy.com/settings?developer](https://hevy.com/settings?developer). Without it
-  there is no lifting data and most of this app is empty.
-- A **Google account** with data in Google Health/Fit, for runs and sleep.
-- **About an hour**, and a willingness to run commands in a terminal.
+- A **Hevy Pro** subscription. The API key is only available on Pro and is
+  generated at [hevy.com/settings?developer](https://hevy.com/settings?developer).
+- A Google account with data in Google Health or Google Fit.
+- Python 3.11 or later, Node.js 20 or later, and git.
+- About an hour for the first install. You will need to run commands in a
+  terminal.
 
-If any of those is a no, stop here — it'll save you the hour.
-
-## Step 0 — Tools
-
-| | Check you have it | If not |
-|---|---|---|
-| **Python 3.11+** | `python --version` | [python.org/downloads](https://www.python.org/downloads/) — tick "Add Python to PATH" |
-| **Node 20+** | `node --version` | [nodejs.org](https://nodejs.org/) — take the LTS build |
-| **git** | `git --version` | [git-scm.com/downloads](https://git-scm.com/downloads) |
-
-Node is needed to *run* the Google Health helper below, not just to change the
+Node.js is required to run the Google Health helper, not only to build the
 frontend.
 
-## Step 1 — The two helper apps (~30 min, the hardest part)
+## Installation
 
-Your data reaches this app through two small programs that run on your own
-machine, each holding its own credentials — which is why none live in this repo.
+### 1. Build the two helper apps
 
-**This is the fiddliest part of the install.** Both need building from source.
-If that's unfamiliar territory, budget an hour and don't start late at night.
+The ledger reads your data through two small MCP servers that run locally and
+hold their own credentials. Build both before installing the ledger. This is the
+longest step.
 
-Put them somewhere short with no spaces in the path, like `C:\ledger\` or
-`~/ledger/` — it makes Step 3 much easier.
-
-| Clone and build | Gives you | You'll end up with |
+| Repository | Provides | Result |
 |---|---|---|
-| [hevy-mcp](https://github.com/visakhr1998/hevy-mcp) | lifting history | a runnable program, plus its own `.env` holding your Hevy API key |
-| [google-health-mcp-v1](https://github.com/visakhr1998/google-health-mcp-v1) | runs, sleep, resting HR | a built `dist/index.js`, plus a token file from signing in to Google |
+| [hevy-mcp](https://github.com/visakhr1998/hevy-mcp) | Lifting history | An executable, and a `.env` file containing your Hevy API key |
+| [google-health-mcp-v1](https://github.com/visakhr1998/google-health-mcp-v1) | Runs, sleep, resting heart rate | A built `dist/index.js`, and a token file from signing in to Google |
 
-Follow each repo's own README to the end, then **write down the full paths** —
-you need four of them in Step 3.
+Follow each repository's README, and note the full paths to the files above.
+A short path without spaces, such as `C:\ledger\` or `~/ledger/`, makes the next
+steps easier.
 
-## Step 2 — Install the ledger
+### 2. Install the ledger
 
-**Windows (PowerShell):**
+Windows (PowerShell):
 
 ```powershell
 git clone https://github.com/visakhr1998/fitness_ledger.git
@@ -76,11 +68,10 @@ pip install -e .
 Copy-Item .env.example .env
 ```
 
-If activating fails with *"running scripts is disabled on this system"*, run
-`Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` once, then try again. That
-allows scripts for your own user account only.
+If PowerShell reports that running scripts is disabled, run
+`Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` once and try again.
 
-**macOS / Linux:**
+macOS and Linux:
 
 ```bash
 git clone https://github.com/visakhr1998/fitness_ledger.git
@@ -91,17 +82,18 @@ pip install -e .
 cp .env.example .env
 ```
 
-Your prompt now starts with `(.venv)` — that's how you know it worked, and it's
-what puts the `ledger` command on your path. `pip install` prints a lot of text
-and often a yellow warning or two; as long as the last line says *Successfully
-installed*, you're fine.
+Once the virtual environment is active, your prompt starts with `(.venv)` and
+the `ledger` command is available.
 
-Week planning is a separate install, because it pulls in around 120 more
-packages: `pip install -e ".[coach]"`.
+Week planning is an optional extra because it adds roughly 118 packages:
 
-## Step 3 — Point it at the helper apps
+```bash
+pip install -e ".[coach]"
+```
 
-Open `.env` and fill in the four paths from Step 1. Use full paths.
+### 3. Configure
+
+Open `.env` and set the paths from step 1:
 
 ```ini
 # Windows
@@ -119,47 +111,47 @@ HEALTH_MCP_ARGS=/Users/you/ledger/google-health-mcp-v1/dist/index.js
 HEALTH_MCP_ENV=GOOGLE_HEALTH_TOKEN_PATH=/Users/you/ledger/google-health-mcp-v1/token.json
 ```
 
-Also set `LOCAL_UTC_OFFSET_MINUTES` to your own offset in minutes — 60 for UK
-summer, 120 for most of Europe, −300 for US Eastern. It decides which day a 10pm
-session counts as.
+Also set `LOCAL_UTC_OFFSET_MINUTES` to your UTC offset in minutes (for example
+60 for UK summer time, 120 for central Europe, -300 for US Eastern). It decides
+which calendar day a late-evening session belongs to.
 
-## Check it worked
+### 4. Check the setup
 
 ```bash
 ledger doctor
 ```
 
-Working output:
+A working setup prints something like:
 
 ```
-Hevy MCP           ok    12 tools
-Google Health MCP  ok    9 tools
-Database           0 workouts
-Model provider     none configured (ask and plan unavailable)
+  hevy          OK  -- account Your Name, 22 tools
+  google-health OK  -- profile age 34, 11 tools
+  database      .../fitness_ledger/data/ledger.db (0 workouts cached)
+  model         NO PROVIDER (ask disabled; set GEMINI_API_KEY)
 ```
 
-`0 workouts` is expected before your first sync, and `none configured` is fine —
-a model is optional. If either server says anything other than `ok`, see
-[when it doesn't work](#when-it-doesnt-work).
+Zero workouts is expected before the first sync, and no model provider is fine
+because a model is optional. If either server shows `FAIL`, see
+[Troubleshooting](#troubleshooting).
 
-## Your first sync
+### 5. Sync and open the dashboard
 
 ```bash
-ledger sync       # a few minutes; ~48 requests for a few hundred workouts
-ledger serve      # then open http://localhost:8000
+ledger sync     # a few minutes the first time
+ledger serve    # then open http://localhost:8000
 ```
 
-Leave the `ledger serve` window open while you use the dashboard. Ctrl-C stops
-it.
+Keep the `ledger serve` terminal open while you use the dashboard, and press
+Ctrl+C to stop it.
 
-Sensible per-muscle targets are already set, so `ledger volume` works
-immediately. `ledger targets` lists all sixteen muscle groups with your current
-numbers; change one with `ledger targets --set chest=16`, or under **Edit weekly
-targets** on the Gym screen.
+Default targets are set for all sixteen muscle groups. You can change them on
+the Gym screen under **Edit weekly targets**, or with
+`ledger targets --set chest=16`.
 
-## Coming back tomorrow
+## Daily use
 
-The virtual environment only lasts as long as that terminal window. Each time:
+The virtual environment applies only to the terminal it was activated in. To
+start the app again later:
 
 ```bash
 cd path/to/fitness_ledger
@@ -168,89 +160,100 @@ source .venv/bin/activate      # macOS / Linux
 ledger serve
 ```
 
-If `ledger` says *command not found*, you skipped the activate step.
+The dashboard has four screens:
 
-## Commands
+- **Goals** — enter goals and weekly rules in plain English, and track progress.
+- **Run** — distance, heart rate and running efficiency.
+- **Gym** — volume per muscle group, tonnage, exercise progression and targets.
+- **Week** — draft a plan, accept or reject it, mark a day as unavailable, and
+  send a day to Hevy.
 
-| Command | What it tells you |
+## Command reference
+
+| Command | Description |
 |---|---|
+| `doctor` | Check the helper apps, database and model provider |
+| `sync [--weeks] [--full]` | Fetch new data from Hevy and Google Health |
+| `serve` | Start the dashboard on port 8000 |
 | `volume [--window]` | Every muscle group against its target |
-| `muscle <name> [--window]` | How much you did for one muscle group |
-| `neglected [--window]` | What you've been skipping |
-| `trend [--weeks] [--muscle]` | Volume over time |
+| `muscle <name> [--window]` | Volume for one muscle group |
+| `neglected [--window]` | Muscle groups furthest below target |
+| `trend [--weeks] [--muscle]` | Weekly volume over time |
 | `progress <exercise>` | Estimated one-rep max over time |
 | `progression` | Whether each lift is ready for more weight |
-| `runs` · `health` | Runs; sleep, resting HR, steps |
+| `runs`, `health` | Runs; sleep, resting heart rate and steps |
 | `insights` | Run the warning rules |
-| `targets [--set chest=16]` | Show or change per-muscle targets |
+| `targets [--set chest=16]` | Show or change weekly targets |
 | `exercises <query>` | Search the exercise catalog |
-| `unavailable <date>` | Mark a day you can't train, then draft again |
-| `export [--out]` | Dump every table to JSON |
+| `unavailable <date>` | Mark a day you cannot train |
+| `export [--out]` | Export every table to JSON |
+
+Commands that need a model provider:
+
+| Command | Description |
+|---|---|
+| `ask "how much chest did I do last week?"` | Ask a question in plain English |
+| `goals --add strength_1rm=100 --subject "Bench Press"` | Add a one-rep-max goal |
+| `goals --add reps=10 --subject "Pull Up"` | Add a rep goal (reps in one set) |
+| `goals --set-running 25/3` | Set a weekly running target: 25 km over 3 runs |
+| `plan [--week]` | Draft a week (requires the `coach` extra) |
 
 Time windows accept `this-week`, `last-week`, `last-4-weeks`, `last-30-days`,
-`last-3-months`, `2026-07`, or `2026-07-01:2026-07-31`. Two of those are not
-interchangeable: `last-N-weeks` counts only finished weeks, `last-N-days`
-includes today — see [how the numbers work](docs/how-it-works.md#two-kinds-of-time-window).
+`last-3-months`, `2026-07`, or a range such as `2026-07-01:2026-07-31`. Note that
+`last-N-weeks` counts only completed weeks, while `last-N-days` includes today;
+see [How the numbers work](docs/how-it-works.md#time-windows).
 
-## Optional: the chat box and week planning
+## Model provider (optional)
 
-Both need a model provider. A free Gemini key from
-[AI Studio](https://aistudio.google.com/apikey) needs no card — put it in `.env`
-as `GEMINI_API_KEY`. Or run a model locally with `LLM_PROVIDER=ollama`, and
-nothing leaves your machine. See [model providers](docs/model-providers.md).
+The chat box, the Goals box and week planning need a model provider. The
+simplest option is a free Gemini key from
+[Google AI Studio](https://aistudio.google.com/apikey), set as `GEMINI_API_KEY`
+in `.env`. To keep everything on your machine, run a local model with
+`LLM_PROVIDER=ollama`. See [Model providers](docs/model-providers.md) for all
+options.
 
-| Command | |
+The planner chooses exercises and days. Set counts come from your weekly
+targets. Accepting a plan only records it in the ledger; sending a day to Hevy
+is a separate step that shows exactly what will be created.
+
+## Troubleshooting
+
+| Symptom | Likely cause |
 |---|---|
-| `ask "how much chest did I do last week?"` | Questions in plain English |
-| `goals --add strength_1rm=100 --subject "Bench Press"` | Set a goal to plan toward |
-| `goals --set-running 25/3` | 25 km a week across 3 runs |
-| `plan [--week]` | Draft a week — also needs `pip install -e ".[coach]"` |
-
-The planner picks exercises and days; it never picks how many sets, which comes
-from your weekly targets. Accepting a week only records it here. Sending a day
-to Hevy is a separate step where you see exactly what will be created first.
-
-## When it doesn't work
-
-| Symptom | Usually means |
-|---|---|
-| `ledger: command not found` | The venv isn't active — see *Coming back tomorrow* |
-| `running scripts is disabled` (Windows) | PowerShell's execution policy — see Step 2 |
-| `doctor` can't reach Hevy | `HEVY_MCP_COMMAND` isn't a full path, or isn't executable |
-| `doctor` can't reach Google Health | The server isn't built — `HEALTH_MCP_ARGS` must point at `dist/index.js` |
-| Google Health worked, now doesn't | The OAuth token expired; re-run that server's sign-in |
-| Empty Gym tab after sync | Hevy returned nothing — check the API key is Pro-active |
-| Sessions land on the wrong day | `LOCAL_UTC_OFFSET_MINUTES` — see Step 3 |
+| `ledger: command not found` | The virtual environment is not active. See [Daily use](#daily-use). |
+| PowerShell says running scripts is disabled | Run `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` once. |
+| `doctor` cannot reach Hevy | `HEVY_MCP_COMMAND` is not a full path, or the file is not executable. |
+| `doctor` cannot reach Google Health | The server is not built. `HEALTH_MCP_ARGS` must point to `dist/index.js`. |
+| Google Health stopped working | The OAuth token has expired. Sign in again through the health server. |
+| The Gym screen is empty after a sync | Hevy returned no data. Check that the API key belongs to a Pro account. |
+| Sessions appear on the wrong day | `LOCAL_UTC_OFFSET_MINUTES` is wrong. See [Configure](#3-configure). |
 
 ## Documentation
 
-- **[How the numbers work](docs/how-it-works.md)** — what an effective set is,
-  time windows, adding weight, what the warnings mean, and running efficiency.
-  *Read this one.*
-- [Model providers](docs/model-providers.md) — only if you want the chat box or
-  the planner.
-- [Architecture](docs/architecture.md) — code layout and internals.
-  *For contributors.*
+- [How the numbers work](docs/how-it-works.md) — effective sets, time windows,
+  progression, goals, planning, warnings and running efficiency.
+- [Model providers](docs/model-providers.md) — setting up the chat box, Goals
+  box and planner.
+- [Architecture](docs/architecture.md) — code layout and internals, for
+  contributors.
+- [Contributing](CONTRIBUTING.md) and [Security](SECURITY.md).
 
 ## Privacy
 
-No credentials live in this repo — the two helper apps hold their own, and
-`.env` here holds paths and settings only. `data/` is git-ignored because the
-database contains your training history. If you turn on the chat box with a
-hosted model, your questions and training numbers go to that provider; `ollama`
-keeps everything local. See [SECURITY.md](SECURITY.md).
+No credentials are stored in this repository. The helper apps keep their own,
+and `.env` contains only paths and settings. The database in `data/` is
+git-ignored. If you use a hosted model provider, your questions and training
+figures are sent to that provider; `ollama` keeps them local. See
+[SECURITY.md](SECURITY.md).
 
-## What this isn't
+## Limitations
 
-- **Not automatic.** Nothing reaches Hevy without you confirming it first. Hevy
-  has no delete endpoint, so anything written has to be removed by hand in the
-  app.
-- **Not medical advice.** Sleep and heart-rate data are shown as your own
-  history, never as a recommendation.
-- **Not multi-user.** One person, no accounts. Share it by cloning it and
-  pointing it at your own data.
+- Nothing is written to Hevy without your confirmation. Hevy has no delete
+  endpoint, so anything written must be removed by hand in the Hevy app.
+- Sleep and heart-rate data are shown as your own history, never as medical
+  advice.
+- The app is single-user. To use it, clone it and point it at your own data.
 
 ## Licence
 
-MIT. See [LICENSE](LICENSE). Contributing notes are in
-[CONTRIBUTING.md](CONTRIBUTING.md).
+MIT. See [LICENSE](LICENSE).

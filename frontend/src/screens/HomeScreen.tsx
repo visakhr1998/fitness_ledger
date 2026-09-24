@@ -7,9 +7,10 @@
  * instead.
  *
  * What comes back is a *proposal*. It is shown for confirmation and saved only
- * on a click, through the same goal and constraint endpoints the CLI uses — the
- * same propose → confirm shape as Hevy write-back, because a parser that
- * quietly persisted would put the model between the user and their own record.
+ * on a click, through the same goal, constraint, running-target and availability
+ * endpoints the CLI uses — the same propose → confirm shape as Hevy write-back,
+ * because a parser that quietly persisted would put the model between the user
+ * and their own record.
  *
  * Not scoped by the time-horizon filter, for the reason Week is not: a goal is
  * not a window over past training.

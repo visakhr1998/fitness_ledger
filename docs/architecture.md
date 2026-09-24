@@ -1,5 +1,9 @@
 # Architecture
 
+This page describes how the code is organised. It is intended for contributors.
+
+## Overview
+
 ```
 CLI ─┐
      ├─► queries.py ──► volume.py · progression.py · insights.py · aei.py
@@ -9,91 +13,128 @@ API ─┘        │              (rules engine: plain Python, no I/O)
               ▲
           sync.py ──► mcp_client.py ──► Hevy MCP · Google Health MCP
 
-          chat.py ──► queries.py as tools ──► llm.py (provider transports)
-          coach/  ──► planning.py (set allocation) ──► assembler ──► Plan
+          chat.py   ──► queries.py as tools ──► llm.py (provider transports)
+          intake.py ──► llm.py            (plain English ─► proposed records)
+          coach/    ──► planning.py (set allocation) ──► assembler ──► Plan
 ```
 
-Four rules keep this shape:
+## Design rules
 
-- **The rules engine takes and returns plain data.** No database, no network, no
-  model, so every number is testable on its own.
-- **All storage lives in `db.py`,** so swapping it later stays contained. No
-  code elsewhere opens a connection or builds a database path.
-- **The model never does maths.** It picks a function to call and describes what
-  comes back — which is why the provider is swappable. `planning.py` works out
-  every set count and has no I/O, so it sits with the rules engine rather than in
-  `coach/`, which touches the database.
-- **`sync.py` is the only thing that reads from the MCP servers.** Everything
-  else reads the local cache. Two places call out directly: `doctor` pings both
-  to check they answer, and approving a write-back sends the routine.
+The following rules keep this structure intact:
 
-The API is a thin wrapper over `queries.py` for anything that reports a number,
-so the API and CLI can't disagree about a figure. Endpoints that manage state —
-goals, plans, availability, write-back — use `SQLiteRepository` directly. The live
-endpoint list is at `/docs` while the server is running; there is no copy of it
-here, because a hand-maintained one was wrong within a week.
+- **The rules engine has no I/O.** `volume.py`, `progression.py`, `insights.py`,
+  `aei.py` and `planning.py` take plain data and return plain data. They do not
+  use the database, the network or a model, so every number can be tested in
+  isolation.
+- **All storage goes through `db.py`.** No other module opens a connection or
+  builds a database path, so the storage backend can be replaced in one place.
+- **The model never calculates.** It chooses which function to call and
+  describes the result. This is also why the provider can be swapped freely.
+- **Only `sync.py` reads from the MCP servers.** Everything else reads the local
+  cache. The two exceptions are `doctor`, which checks that both servers
+  respond, and approving a Hevy write-back, which sends the routine.
+
+For anything that reports a number, the API is a thin wrapper over `queries.py`,
+so the API and the CLI always agree. Endpoints that manage state (goals, plans,
+availability and write-back) use `SQLiteRepository` directly. The full endpoint
+list is available at `/docs` while the server is running.
+
+## Goal intake
+
+`intake.py` turns a sentence into a proposal: goals, standing weekly rules, a
+weekly running target and one-off days off. Nothing is saved until the user
+confirms it in the Goals screen.
+
+- A deterministic check for red-flag symptoms (for example "numbness" or "gives
+  way") runs before the model is called. If it matches, no model request is made
+  and a fixed referral message is returned.
+- The model returns its result through a single tool call, and every proposed
+  record is validated by the same model classes the CLI and API use.
+- Relative dates such as "this Friday" are resolved by copying from a 14-day
+  calendar included in the prompt. Any date outside that calendar is rejected.
 
 ## The planner
 
-Turns goals, training history and free days into a proposed week.
+The planner turns goals, training history and free days into a proposed week.
 
 ```
-context reader (no model — just reads the database)
-        │  goals · training history · free days · exercise pool · last week's plan
+context reader (no model; reads the database)
+        │  goals · weekly rules · training history · free days · exercise pool
+        │  · last week's plan · whether this week follows a break
         ▼
-strength planner ──► running planner        (one after the other)
+strength planner ──► running planner        (run in sequence)
         │
         ▼
-planning.py works out the sets, validates, saves the Plan
+planning.py calculates sets and checks the rules; the assembler stores the plan
 ```
 
-**The agent never says how many sets.** It picks exercises and days;
-`planning.py` calculates the numbers. That's enforced by the data structure — the
-agent's output type has no field for a set count, rep count or weight — rather
-than by asking it nicely in a prompt.
+### Division of work
 
-**Set counts come from the weekly target, not from what you missed.** Using the
-shortfall punished consistency: hitting your target exactly produced a week with
-nothing in it. The shortfall instead decides what survives when a session won't
-fit.
+The planner chooses exercises and days. `planning.py` calculates every number.
+This is enforced by the output schema: the planner's output types have no field
+for sets, reps, weight or distance.
 
-When the week is too tight, things are given up in this order: **volume per
-muscle group → hitting every muscle → runs on track → number of sessions.**
+Set counts come from the weekly target rather than from last week's shortfall.
+Allocating the shortfall would give someone who hit their target a near-empty
+week. The shortfall is used instead to decide which sets to keep when a session
+exceeds its limit. When a week is too tight, volume is given up in this order:
 
-**A week that breaks a hard rule is planned again, not stored.** The hard rules
-are the ones `planning.validate` checks: training days only, the set ceilings,
-the exercise pool, rest between sessions for the same muscle, no run the day
-after legs (unless the setting allows it), and the standing weekly constraints
-from the Goals screen. The next attempt is told what the last one broke. Out of
-attempts (`COACH_MAX_PLAN_ATTEMPTS`), the week with the fewest violations is
-kept and shown with them. A week with no training in it is never stored; the
-status reports the failure instead.
+1. Volume per muscle group
+2. Coverage of every muscle group
+3. Runs on target
+4. Number of sessions
 
-**After a break, targets ramp back up.** Two or more weeks with no lifting
-logged, with training before them, count as a break. The first week back
-plans a fraction of the weekly target (half after four or more weeks off),
-rising over the next weeks (`planning.ramp`). This is arithmetic, not a prompt
-instruction, and the trade-offs say so.
+### Validation and retries
 
-**Last week's exercises are kept where they can be,** because progress on a
-lift is only readable if it recurs. The planner is shown last week's plan and
-asked to reuse it, and the trade-offs report how many exercises were kept.
+`planning.validate` checks each draft against the hard rules: training days
+only, the set limits, the exercise pool, rest between sessions for the same
+muscle, no run the day after legs (unless the setting allows it), and the
+standing weekly rules.
 
-Plans are append-only — a revision is a new row pointing at the old one.
+A draft that breaks a rule, or contains no training, is sent back to the planner
+with the list of problems. After `COACH_MAX_PLAN_ATTEMPTS` attempts, the draft
+with the fewest problems is kept and shown with them. A week with no training is
+never stored; the plan status reports the failure instead.
 
-Generating one takes about 3 model requests and tens of seconds, so it runs in
-the background and the client polls, the same pattern as sync. Asking again
-while one is running is refused rather than queued, because a duplicate run
-costs quota.
+### Returning from a break
+
+`planning.ramp` scales the weekly targets after a break of two or more weeks
+without lifting. The context reader calculates the factor once and the assembler
+reads it back, so the stored plan is scaled by exactly the factor the planner
+was told about.
+
+### Continuity
+
+The planner is shown last week's plan and asked to reuse its exercises, since
+progress on a lift can only be tracked if the lift appears again. The plan's
+trade-offs report how many exercises were kept.
+
+### Storage and timing
+
+Plans are append-only: a revision is stored as a new row that points to the
+previous one.
+
+Each attempt takes two or three model requests. A plan can therefore take from
+tens of seconds to several minutes, so generation runs in the background and the
+client polls for status, as it does for sync. A second request while one is
+running is refused rather than queued.
 
 ## Writing to Hevy
 
-The only part of this app that changes anything outside it: **propose → diff →
-confirm → write → log**, and the propose step never contacts Hevy.
+Write-back is the only feature that changes data outside the app. It follows a
+fixed sequence: **propose, diff, confirm, write, log**. The propose step never
+contacts Hevy.
 
-**Hevy has no delete endpoint.** Anything written can only be removed by hand in
-the app, so the diff is what makes the write deliberate. It is never optional.
+Hevy has no delete endpoint, so anything written must be removed by hand in the
+Hevy app. For that reason the diff step cannot be skipped.
 
-Two callers share that one surface: the routine builder and the Week tab's
-per-day send. Accepting a *plan* only records it locally; only the per-day step
-writes.
+Two features use this flow: the routine builder on the Gym screen and the
+per-day send on the Week screen. Accepting a plan only records it locally; only
+the per-day send writes to Hevy.
+
+Two safeguards protect the write:
+
+- A proposal is claimed in the database before the Hevy call is made, so two
+  simultaneous approvals cannot both write a routine.
+- Write requests carrying an `Origin` header from another site are refused, so
+  a web page open in another tab cannot trigger an approval.
