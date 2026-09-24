@@ -1,74 +1,92 @@
 # Model providers
 
-Three features use a model: the **chat box** (`ledger ask`), the **planner**
-(`ledger plan`), and the **Goals box**, which reads a sentence and proposes the
-goals, weekly rules and days off in it. Nothing else does — sync, the tracker
-and every number on the dashboard work with no provider configured.
+Three features use a language model:
 
-The model never calculates anything; it picks which function to call and
-describes the result. That's easy work, so a small free model does about as well
-as an expensive one.
+- the **chat box** (`ledger ask`), which answers questions about your training;
+- the **Goals box**, which turns a sentence into proposed goals, weekly rules
+  and days off;
+- the **planner** (`ledger plan`), which drafts a week.
+
+Everything else works without a model, including sync, the tracker and every
+number on the dashboard.
+
+The model never calculates anything. It chooses which function to call and
+describes the result, so a small free model performs about as well as a large
+paid one.
+
+## Choosing a provider
 
 | `LLM_PROVIDER` | Also set | Cost | Notes |
 |---|---|---|---|
-| `gemini` | `GEMINI_API_KEY` | free tier | [Get a key](https://aistudio.google.com/apikey) — no card needed. Default. |
-| `ollama` | *(nothing)* | free | Runs locally. `ollama pull qwen3:4b`. Nothing leaves your machine. |
-| `anthropic` | `ANTHROPIC_API_KEY` | paid | Also picks up an `ant auth login` profile. |
-| `openai-compatible` | `LLM_BASE_URL`, `LLM_MODEL`, `LLM_API_KEY` | varies | Groq, OpenRouter, self-hosted vLLM. The key is optional for a local server, required for a hosted one. |
+| `gemini` | `GEMINI_API_KEY` | Free tier | Default. [Get a key](https://aistudio.google.com/apikey); no card required. |
+| `ollama` | Nothing | Free | Runs locally with `ollama pull qwen3:4b`. No data leaves your machine. |
+| `anthropic` | `ANTHROPIC_API_KEY` | Paid | Also uses an `ant auth login` profile if present. |
+| `openai-compatible` | `LLM_BASE_URL`, `LLM_MODEL`, `LLM_API_KEY` | Varies | For Groq, OpenRouter or a self-hosted server. The key is optional for a local server. |
 
-Leave `LLM_PROVIDER` empty and it picks whichever key you have, preferring the
-free one. `LLM_MODEL` overrides the model for any provider.
+If `LLM_PROVIDER` is empty, the ledger uses whichever key is set, preferring the
+free option. `LLM_MODEL` overrides the model for any provider.
 
-Worth knowing:
+## Requirements and settings
 
-- **The model must support tool calling.** The whole loop is tool calls, so one
-  without it fails outright rather than giving worse answers. Ollama's `gemma3`
-  has no tool support — use `qwen3` locally.
-- **Gemini is asked to think as little as possible** (`LLM_REASONING_EFFORT`
-  defaults to `minimal`). Thinking tokens count against the output limit without
-  appearing in the reply, which truncates answers mid-sentence. Set `off` to
-  leave the setting out of the request entirely, for a provider that rejects it.
-- **Response times vary far more than you would expect.** The same request to
-  `gemini-3.6-flash`, five times in a row, took 2.9s, 15.0s, 26.5s, 103.7s and
-  6.4s. `LLM_TIMEOUT_SECONDS` (default 30) caps the wait and `LLM_MAX_RETRIES`
-  (default 1) asks again, because a slow draw is usually followed by a fast one.
-  Set the timeout to `0` for a local model that is legitimately slow.
-  The planner has its own `COACH_TIMEOUT_SECONDS` (default 120): it reaches the
-  provider through ADK rather than the dock's client, so the setting above does
-  not apply to it, and a planning request is larger than a chat turn.
-- **The planner and the chat dock can use different providers**, and on some
-  setups they should. `COACH_PROVIDER` and `COACH_MODEL` override
-  `LLM_PROVIDER`/`LLM_MODEL` for planning only; leave them blank to use the
-  same provider for both. Chatting is frequent and wants a fast model; planning
-  happens a few times a week and wants one that can hold a whole week in its
-  head. Measured on one fixture with an identical prompt,
-  `deepseek-v4-flash-0731` returned an empty week and `gemini-3.6-flash`
-  returned four sessions and 64 sets, so the free Gemini tier is the better
-  planner even where DeepSeek is the better chat model.
-- **Free tiers usually cost you data instead.** Outside the EEA, UK and
-  Switzerland, Google may use free-tier prompts to improve their products,
-  including human review. The chat box sends your questions along with your
-  training numbers. Use `ollama` if that matters.
+**Tool calling is required.** Every request is a tool call, so a model without
+tool support fails outright. Ollama's `gemma3` does not support tools; use
+`qwen3` instead.
 
-## The planner
+**Gemini reasoning is kept to a minimum.** `LLM_REASONING_EFFORT` defaults to
+`minimal`, because thinking tokens count against the output limit and can cut
+answers short. Set it to `off` to omit the parameter for a provider that
+rejects it.
 
-`GEMINI_MODEL` defaults to `gemini-3.6-flash`, picked by testing the free
-options against the same case — three weeks with no back training. Drafting a
-week costs 2-3 requests per attempt (the running planner is skipped when no
-running target is set). A draft that comes back empty or breaks a hard rule is
-asked again, up to `COACH_MAX_PLAN_ATTEMPTS` (default 3) — so a bad draw can
-cost up to about 9.
+**Response times vary widely.** Five identical requests to `gemini-3.6-flash`
+took 2.9, 15.0, 26.5, 103.7 and 6.4 seconds. Two settings control this for the
+chat box and Goals box:
 
-**Don't hard-code a model name.** One became unavailable partway through this
-project; being able to swap it in `.env` is what made that survivable.
+| Setting | Default | Meaning |
+|---|---|---|
+| `LLM_TIMEOUT_SECONDS` | `30` | Maximum wait per request; `0` disables the limit |
+| `LLM_MAX_RETRIES` | `1` | Retries after a timeout |
 
-### Backup provider
+The planner reaches the model through ADK rather than the same client, so it has
+its own timeout, `COACH_TIMEOUT_SECONDS` (default 120).
 
-Off unless all three `COACH_FALLBACK_*` variables are set. If the main provider
-returns a rate-limit error, the same pipeline runs again on a second
-OpenAI-compatible provider — DeepSeek through OpenRouter costs about $0.0015 a
-plan.
+## Separate provider for the planner
 
-**Only a rate limit triggers it.** A malformed response is a real bug, and
-retrying it elsewhere would hide the cause behind a second bill. Results record
-which model answered, so a plan from the backup is never silent.
+`COACH_PROVIDER` and `COACH_MODEL` override `LLM_PROVIDER` and `LLM_MODEL` for
+planning only. Leave them empty to use the same provider for both.
+
+This is useful because the two workloads differ. The chat box is used often and
+benefits from a fast model; the planner runs a few times a week and needs a
+model that can plan a whole week. In a test on the same case with the same
+prompt, `deepseek-v4-flash-0731` returned an empty week and `gemini-3.6-flash`
+returned four sessions and 64 sets.
+
+## The planner's default model
+
+`GEMINI_MODEL` defaults to `gemini-3.6-flash`, chosen by testing the free models
+on the same case: three weeks with no back training.
+
+Each planning attempt uses two or three requests (two when no running target is
+set). A draft that is empty or breaks a rule is retried, up to
+`COACH_MAX_PLAN_ATTEMPTS` attempts (default 3), so one plan can use up to about
+nine requests.
+
+Keep the model name in `.env` rather than in code. Model versions are withdrawn:
+`gemini-2.5-flash`, for example, now returns a 404 for new users.
+
+## Backup provider for the planner
+
+A backup provider is used only when all three `COACH_FALLBACK_*` variables are
+set. If the main provider returns a rate-limit error, the same planning pipeline
+runs on a second OpenAI-compatible provider. DeepSeek through OpenRouter costs
+about $0.0015 per plan.
+
+Only rate-limit errors trigger the backup. Other errors are reported, because
+retrying a genuine fault on a second provider would hide it. Each plan records
+which model produced it.
+
+## Data sharing
+
+Outside the EEA, the UK and Switzerland, Google may use prompts sent to its free
+tier to improve its products, including through human review. All three
+features send your training figures, and the chat box and Goals box also send
+what you type. Use `ollama` if this matters to you.
