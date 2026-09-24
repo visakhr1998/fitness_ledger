@@ -802,8 +802,8 @@ async def parse_intake(request: IntakeRequest) -> dict[str, Any]:
     """Turn a description of someone's goals into a *proposal*.
 
     Writes nothing. The UI confirms what comes back and then posts to
-    /api/goals, /api/constraints and /api/running-target, so the model never
-    stands between the user and their own record.
+    /api/goals, /api/constraints, /api/running-target and /api/availability,
+    so the model never stands between the user and their own record.
     """
     from .intake import parse
 

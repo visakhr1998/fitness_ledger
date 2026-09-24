@@ -1,8 +1,9 @@
 # Model providers
 
-Two features use a model: the **chat box** (`ledger ask`) and the **planner**
-(`ledger plan`). Nothing else does — sync, the tracker and every number on the
-dashboard work with no provider configured.
+Three features use a model: the **chat box** (`ledger ask`), the **planner**
+(`ledger plan`), and the **Goals box**, which reads a sentence and proposes the
+goals, weekly rules and days off in it. Nothing else does — sync, the tracker
+and every number on the dashboard work with no provider configured.
 
 The model never calculates anything; it picks which function to call and
 describes the result. That's easy work, so a small free model does about as well
@@ -18,7 +19,7 @@ as an expensive one.
 Leave `LLM_PROVIDER` empty and it picks whichever key you have, preferring the
 free one. `LLM_MODEL` overrides the model for any provider.
 
-Three things worth knowing:
+Worth knowing:
 
 - **The model must support tool calling.** The whole loop is tool calls, so one
   without it fails outright rather than giving worse answers. Ollama's `gemma3`
@@ -53,7 +54,10 @@ Three things worth knowing:
 
 `GEMINI_MODEL` defaults to `gemini-3.6-flash`, picked by testing the free
 options against the same case — three weeks with no back training. Drafting a
-week costs about 3 requests, comfortably inside the free tier.
+week costs 2-3 requests per attempt (the running planner is skipped when no
+running target is set). A draft that comes back empty or breaks a hard rule is
+asked again, up to `COACH_MAX_PLAN_ATTEMPTS` (default 3) — so a bad draw can
+cost up to about 9.
 
 **Don't hard-code a model name.** One became unavailable partway through this
 project; being able to swap it in `.env` is what made that survivable.

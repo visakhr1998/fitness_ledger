@@ -18,7 +18,14 @@ chat dock and approval-gated Hevy write-back. The ten-day coach plan finished on
 2026-08-28: the `Week` tab now generates a plan, accepts or rejects it, takes a
 day away, and sends a single lifting day to Hevy behind the diff. A `Goals` tab
 was added on 2026-08-29 and is where the app opens: it takes a goal described in
-plain English and proposes the structured records behind it.
+plain English and proposes the structured records behind it -- goals (including
+`reps`), standing weekly rules, a weekly running target and one-off days off.
+
+The UAT pass of 2026-09-10 produced issues #55-#64 and #70; all but #63 were
+closed on 2026-09-25 by PRs #72-#77 (hard rules re-plan, intake vocabulary, rep
+goals, a targets editor on Gym, a ramp after a break, an AEI terrain bound).
+#63 -- exercise selection turning over week to week -- is narrowed, not fixed:
+it needs the template library.
 
 v0.4 is hosting and scheduled runs. The last item outstanding from v0.3 scope is
 the `drift` rule. Fuller history, and the reasoning behind decisions that are
@@ -195,7 +202,8 @@ Two rules, both learned the hard way:
 ## Working here
 
 ```bash
-./.venv/Scripts/python.exe -m pytest              # 633 tests (coach tests skip without the extra)
+./.venv/Scripts/python.exe -m pytest              # 660 pass, 52 skip (coach evals); 712 collected
+cd frontend && npm test                           # 30 tests
 cd frontend && npm run build                      # required after any frontend change
 ./.venv/Scripts/python.exe -m fitness_ledger.cli doctor
 ./.venv/Scripts/python.exe -m fitness_ledger.cli sync
@@ -331,6 +339,16 @@ per plan in `UNDERSTANDING.md` -- and never a looser assertion.
   on by default (#61); both were only safe once violations re-planned. An empty
   week is never stored (#55). Every new rule belongs in `validate`, so the retry
   loop and the stored plan cannot disagree about what counts.
+- **The model never works out a date.** Intake resolves "this Friday" by
+  copying from a 14-day calendar in its prompt (`intake.calendar`), and
+  `_unavailable_from` refuses any date outside it; the planners get standing
+  rules as this week's dates (`constraints_summary`). Converting a weekday or a
+  relative day into a date is arithmetic -- render it, don't ask for it.
+- **The ramp after a break is computed once.** `queries.training_ramp` feeds the
+  pure `planning.ramp`; the context reader stores it in `ledger_state.ramp` and
+  the assembler reads it back rather than recomputing, so the week is scaled by
+  exactly what the planner was told. No history before a gap is not a break --
+  otherwise a fresh clone plans at half.
 - **One exercise cannot absorb a muscle's whole weekly target.**
   `MAX_SETS_PER_EXERCISE` is 4, lowered from 6 on 2026-09-20 for #69: a muscle
   on a 14-set target that the planner served with one movement took all of it

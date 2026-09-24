@@ -63,6 +63,45 @@ set looks identical to a failed attempt at the range. So only sets at the
 session's heaviest weight count towards the decision, and lighter follow-up sets
 never hold you back. Change the range per exercise from the dashboard.
 
+## Goal progress
+
+Every goal's progress bar is worked out here, never by the model — the chat box
+explains the figure, it does not produce it.
+
+| Goal | Measured as |
+|---|---|
+| One-rep max | Estimated 1RM (Epley) of the best set in your latest session of that lift, last 12 weeks |
+| Reps | Most reps in one working set in your latest session of that exercise, last 12 weeks — any load, and the load is shown |
+| Weekly distance | Kilometres run last complete week |
+| Running efficiency | Latest AEI from a run that passed the reliability checks, last 12 weeks |
+| Sessions a week | Workouts per week over the last 4 complete weeks |
+| Race time | Not measured yet — predicting a race time needs a pace model this app doesn't have |
+
+"Not measured" and "no progress" are shown differently on purpose: an empty bar
+would claim you have made none.
+
+## Planning a week
+
+The planner chooses exercises and days. Every number in the plan comes from
+here:
+
+- **Sets come from your weekly target**, split evenly across the exercises
+  chosen for each muscle. An exercise that serves two muscles takes the larger
+  share, not the sum.
+- **2 to 4 sets per exercise, at most 24 in a session.** One exercise can't take
+  a muscle's whole target; what doesn't fit is listed as still short.
+- **After a break, targets ramp back up.** Two or more weeks with no lifting,
+  after training before that, count as a break. The first week back plans half
+  the target after four or more weeks off (70% after two or three), rising over
+  the next weeks to the full target.
+- **Runs** split your weekly distance evenly across the days chosen for them.
+
+A draft is checked before you see it: only days you can train, at least one
+rest day between sessions for the same muscle, no run the day after legs
+(unless you turn that off), and your weekly rules from the Goals screen. A draft
+that breaks one is sent back and redone; if every attempt breaks something, the
+best one is shown with the problem listed beside it.
+
 ## Warning rules
 
 These run when you ask — `ledger insights`, or the dashboard. They only report.

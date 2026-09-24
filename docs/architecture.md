@@ -39,7 +39,8 @@ Turns goals, training history and free days into a proposed week.
 
 ```
 context reader (no model — just reads the database)
-        │  goals · training history · free days · exercise pool · last week's plan
+        │  goals · weekly rules · training history · free days · exercise pool
+        │  · last week's plan · whether this is a week back from a break
         ▼
 strength planner ──► running planner        (one after the other)
         │
@@ -81,8 +82,9 @@ asked to reuse it, and the trade-offs report how many exercises were kept.
 
 Plans are append-only — a revision is a new row pointing at the old one.
 
-Generating one takes about 3 model requests and tens of seconds, so it runs in
-the background and the client polls, the same pattern as sync. Asking again
+Generating one takes 2-3 model requests per attempt and anywhere from tens of
+seconds to several minutes when a draft has to be redone, so it runs in the
+background and the client polls, the same pattern as sync. Asking again
 while one is running is refused rather than queued, because a duplicate run
 costs quota.
 

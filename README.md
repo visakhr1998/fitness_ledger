@@ -17,8 +17,14 @@ Google Health. It can also draft next week's training for you to approve.
   week? What am I neglecting? Is my running getting more efficient?
 - **Measures running efficiency.** Distance adjusted for hills, divided by
   heartbeats, so a hilly run and a flat one of similar length compare fairly.
+- **Takes goals in plain English.** "Sub-4 marathon in November, bench 100 kg,
+  pull-ups from 5 to 10, my knee hates running on Wednesdays, can't train this
+  Friday" becomes goals, a weekly rule and a day off — shown to you before
+  anything is saved.
 - **Drafts your week.** A planner proposes sessions from your goals, what you've
   been doing, and which days you have free — and says what it couldn't fit in.
+  It keeps to your weekly rules, eases back in after a break, and a draft that
+  breaks a rule is sent back and redone rather than shown to you as finished.
 - **Never changes anything on its own.** Warnings are shown, not acted on.
   Sending a workout to Hevy needs you to confirm it against a before/after
   comparison.
@@ -96,7 +102,7 @@ what puts the `ledger` command on your path. `pip install` prints a lot of text
 and often a yellow warning or two; as long as the last line says *Successfully
 installed*, you're fine.
 
-Week planning is a separate install, because it pulls in around 120 more
+Week planning is a separate install, because it pulls in roughly 118 more
 packages: `pip install -e ".[coach]"`.
 
 ## Step 3 — Point it at the helper apps
@@ -132,14 +138,14 @@ ledger doctor
 Working output:
 
 ```
-Hevy MCP           ok    12 tools
-Google Health MCP  ok    9 tools
-Database           0 workouts
-Model provider     none configured (ask and plan unavailable)
+  hevy          OK  -- account Your Name, 22 tools
+  google-health OK  -- profile age 34, 11 tools
+  database      .../fitness_ledger/data/ledger.db (0 workouts cached)
+  model         NO PROVIDER (ask disabled; set GEMINI_API_KEY)
 ```
 
-`0 workouts` is expected before your first sync, and `none configured` is fine —
-a model is optional. If either server says anything other than `ok`, see
+`0 workouts cached` is expected before your first sync, and `NO PROVIDER` is
+fine — a model is optional. If either server says `FAIL`, see
 [when it doesn't work](#when-it-doesnt-work).
 
 ## Your first sync
@@ -203,8 +209,12 @@ nothing leaves your machine. See [model providers](docs/model-providers.md).
 |---|---|
 | `ask "how much chest did I do last week?"` | Questions in plain English |
 | `goals --add strength_1rm=100 --subject "Bench Press"` | Set a goal to plan toward |
+| `goals --add reps=10 --subject "Pull Up"` | A rep goal: reps in one set |
 | `goals --set-running 25/3` | 25 km a week across 3 runs |
 | `plan [--week]` | Draft a week — also needs `pip install -e ".[coach]"` |
+
+The easier route is the **Goals** screen in the dashboard: describe what you
+want in a sentence, check what it found, and save.
 
 The planner picks exercises and days; it never picks how many sets, which comes
 from your weekly targets. Accepting a week only records it here. Sending a day

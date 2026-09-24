@@ -16,8 +16,9 @@ you last pulled.
 
 Two things do leave your machine, and only if you opt in:
 
-- **The chat box and the planner** send your training figures and your questions
-  to whichever model provider you configure. Setting `LLM_PROVIDER=ollama` keeps
+- **The chat box, the planner and the Goals box** send your training figures,
+  your questions and what you type about your goals to whichever model provider
+  you configure. Setting `LLM_PROVIDER=ollama` keeps
   this local. See [docs/model-providers.md](docs/model-providers.md).
 - **Hevy write-back** sends a routine you have explicitly confirmed. Nothing is
   sent without that confirmation, and Hevy has no delete endpoint, so anything
