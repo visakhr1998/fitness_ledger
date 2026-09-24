@@ -243,6 +243,16 @@ export type RoutineProposal = {
   diff: { rows: DiffRow[]; added: number; changed: number; removed: number; warning: string };
 };
 
+/** A weekly volume target, in weekly units. The Gym screen's radar shows the
+ *  same number scaled to the selected window, which is why editing goes
+ *  through this rather than through the chart rows. */
+export type VolumeTarget = {
+  muscle_group: string;
+  sets_per_week: number;
+  frequency_per_week: number;
+  size_class: string;
+};
+
 export type Goal = {
   id: number;
   type: string;
@@ -451,6 +461,9 @@ export const api = {
   addGoal: (body: Record<string, unknown>) => send<{ id: number }>("/api/goals", "POST", body),
   closeGoal: (id: number, status: "achieved" | "abandoned") =>
     send<{ id: number }>(`/api/goals/${id}`, "PUT", { status }),
+  targets: () => get<VolumeTarget[]>("/api/targets"),
+  setTargets: (rows: { muscle_group: string; sets_per_week: number; frequency_per_week: number }[]) =>
+    send<{ updated: number }>("/api/targets", "PUT", rows),
   setRunningTarget: (distance_km_per_week: number, sessions_per_week: number) =>
     send<unknown>("/api/running-target", "PUT", { distance_km_per_week, sessions_per_week }),
   /** Propose goals from a description. Writes nothing — the caller saves.

@@ -154,7 +154,8 @@ it.
 
 Sensible per-muscle targets are already set, so `ledger volume` works
 immediately. `ledger targets` lists all sixteen muscle groups with your current
-numbers; change one with `ledger targets --set chest=16`.
+numbers; change one with `ledger targets --set chest=16`, or under **Edit weekly
+targets** on the Gym screen.
 
 ## Coming back tomorrow
 

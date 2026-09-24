@@ -2,7 +2,8 @@
 
 import { useEffect, useMemo, useState } from "react";
 import {
-  api, type ExerciseDetail, type ExerciseSummary, type GymSection, type Range, type Vitals,
+  api, readable, type ExerciseDetail, type ExerciseSummary, type GymSection, type Range,
+  type Vitals, type VolumeTarget,
 } from "../api";
 import {
   Card, Columns, fmt, LineChart, Radar, TableTwin, TargetBars, type Point,
@@ -27,6 +28,9 @@ export function GymScreen({
   const [error, setError] = useState<string | null>(null);
   const [radarTable, setRadarTable] = useState(false);
   const [volumeTable, setVolumeTable] = useState(false);
+  // Bumped after targets are saved, so the radar and bars re-read the number
+  // they are judging against.
+  const [targetsVersion, setTargetsVersion] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -40,7 +44,7 @@ export function GymScreen({
       })
       .catch((err) => !cancelled && setError(err.message));
     return () => { cancelled = true; };
-  }, [range.window, range.start, range.end, reloadKey]);
+  }, [range.window, range.start, range.end, reloadKey, targetsVersion]);
 
   if (error) return <ErrorNote message={error} />;
   if (!data) return <Loading />;
@@ -101,6 +105,7 @@ export function GymScreen({
               }))}
             />
           </div>
+          <TargetEditor onSaved={() => setTargetsVersion((value) => value + 1)} />
         </Card>
 
         <Card
@@ -128,6 +133,186 @@ export function GymScreen({
       <div style={{ display: "grid", gap: "var(--gap)", position: "sticky", top: 12 }}>
         {vitals && <VitalsCard vitals={vitals} compact />}
       </div>
+    </div>
+  );
+}
+
+// --- weekly targets --------------------------------------------------------
+
+// The API's own bounds (`TargetUpdate` in api.py), checked here first so a bad
+// entry is named rather than arriving as a 422 with no readable detail.
+const MAX_SETS = 60;
+const MAX_FREQUENCY = 7;
+
+type Draft = Record<string, { sets: string; frequency: string }>;
+
+/** Edit the per-muscle weekly targets beside the bars that are measured
+ *  against them (#60).
+ *
+ *  They were CLI-only -- `ledger targets --set chest=16` -- while this screen
+ *  drew the target and offered no way to change it. Weekly units throughout,
+ *  from /api/targets: the chart shows the target scaled to the selected
+ *  window, and editing that figure would store a four-week number as a weekly
+ *  one. */
+function TargetEditor({ onSaved }: { onSaved: () => void }) {
+  const [open, setOpen] = useState(false);
+  const [targets, setTargets] = useState<VolumeTarget[] | null>(null);
+  const [draft, setDraft] = useState<Draft>({});
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [saved, setSaved] = useState(false);
+
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    api.targets()
+      .then((rows) => {
+        if (cancelled) return;
+        setTargets(rows);
+        setDraft(Object.fromEntries(rows.map((row) => [
+          row.muscle_group,
+          { sets: String(row.sets_per_week), frequency: String(row.frequency_per_week) },
+        ])));
+      })
+      .catch((exc) => !cancelled && setError(readable(exc)));
+    return () => { cancelled = true; };
+  }, [open]);
+
+  const changed = (targets ?? []).filter((row) => {
+    const entry = draft[row.muscle_group];
+    return entry && (
+      Number(entry.sets) !== row.sets_per_week || Number(entry.frequency) !== row.frequency_per_week
+    );
+  });
+
+  const invalid = changed.filter((row) => {
+    const entry = draft[row.muscle_group];
+    const sets = Number(entry.sets);
+    const frequency = Number(entry.frequency);
+    return (
+      entry.sets.trim() === "" || !(sets >= 0 && sets <= MAX_SETS) ||
+      entry.frequency.trim() === "" || !Number.isInteger(frequency) ||
+      !(frequency >= 0 && frequency <= MAX_FREQUENCY)
+    );
+  });
+
+  const save = async () => {
+    setBusy(true);
+    setError(null);
+    setSaved(false);
+    try {
+      await api.setTargets(changed.map((row) => ({
+        muscle_group: row.muscle_group,
+        sets_per_week: Number(draft[row.muscle_group].sets),
+        frequency_per_week: Number(draft[row.muscle_group].frequency),
+      })));
+      setTargets((rows) => (rows ?? []).map((row) => {
+        const entry = draft[row.muscle_group];
+        return entry
+          ? { ...row, sets_per_week: Number(entry.sets), frequency_per_week: Number(entry.frequency) }
+          : row;
+      }));
+      setSaved(true);
+      onSaved();
+    } catch (exc) {
+      setError(readable(exc));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const blocked = busy || changed.length === 0 || invalid.length > 0;
+  const inputStyle = {
+    width: 64, background: "var(--surface-raised)", color: "var(--text-primary)",
+    border: "1px solid var(--border)", borderRadius: 8, padding: "5px 8px", fontSize: 13,
+  } as const;
+
+  return (
+    <div style={{ marginTop: 14, borderTop: "1px solid var(--border)", paddingTop: 12 }}>
+      <button
+        onClick={() => setOpen((value) => !value)}
+        aria-expanded={open}
+        style={{ fontSize: 13, color: "var(--accent)", background: "transparent", padding: 0 }}
+      >
+        {open ? "Hide weekly targets" : "Edit weekly targets"}
+      </button>
+
+      {open && (
+        <div style={{ marginTop: 12 }}>
+          <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 10 }}>
+            Sets and training days per week for each muscle group. The bars above show
+            these scaled to the selected period; the planner and the warnings read the
+            same numbers.
+          </div>
+          {!targets && !error && <Loading />}
+          {targets && (
+            <div
+              style={{
+                display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))",
+                gap: "8px 20px",
+              }}
+            >
+              {targets.map((row) => {
+                const entry = draft[row.muscle_group] ?? { sets: "", frequency: "" };
+                const label = row.muscle_group.replace(/_/g, " ");
+                return (
+                  <div key={row.muscle_group} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13 }}>
+                    <span style={{ flex: "1 1 auto", color: "var(--text-secondary)" }}>{label}</span>
+                    <input
+                      type="number" min={0} max={MAX_SETS} step={1} inputMode="decimal"
+                      value={entry.sets}
+                      aria-label={`${label} sets per week`}
+                      onChange={(event) => setDraft((d) => ({
+                        ...d, [row.muscle_group]: { ...entry, sets: event.target.value },
+                      }))}
+                      style={inputStyle}
+                    />
+                    <span style={{ color: "var(--text-muted)", fontSize: 12 }}>sets</span>
+                    <input
+                      type="number" min={0} max={MAX_FREQUENCY} step={1} inputMode="numeric"
+                      value={entry.frequency}
+                      aria-label={`${label} days per week`}
+                      onChange={(event) => setDraft((d) => ({
+                        ...d, [row.muscle_group]: { ...entry, frequency: event.target.value },
+                      }))}
+                      style={{ ...inputStyle, width: 48 }}
+                    />
+                    <span style={{ color: "var(--text-muted)", fontSize: 12 }}>days</span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 12, alignItems: "center", marginTop: 14 }}>
+            <button
+              onClick={save}
+              disabled={blocked}
+              style={{
+                padding: "7px 16px", borderRadius: "var(--radius-control)",
+                background: "var(--accent)", color: "var(--bg)", fontSize: 13, fontWeight: 600,
+                opacity: blocked ? 0.5 : 1, cursor: blocked ? "default" : "pointer",
+              }}
+            >
+              {busy
+                ? "Saving…"
+                : changed.length
+                  ? `Save ${changed.length} change${changed.length === 1 ? "" : "s"}`
+                  : "No changes"}
+            </button>
+            {invalid.length > 0 && (
+              <span role="alert" style={{ fontSize: 12, color: "var(--critical)" }}>
+                Sets must be 0–{MAX_SETS} and days a whole number 0–{MAX_FREQUENCY}:{" "}
+                {invalid.map((row) => row.muscle_group.replace(/_/g, " ")).join(", ")}
+              </span>
+            )}
+            {saved && changed.length === 0 && (
+              <span style={{ fontSize: 12, color: "var(--text-muted)" }}>Saved.</span>
+            )}
+            {error && <span role="alert" style={{ fontSize: 12, color: "var(--critical)" }}>{error}</span>}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
