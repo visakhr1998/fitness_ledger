@@ -156,6 +156,7 @@ def test_the_tool_list_is_stable(bound):
         "get_recovery_signals",
         "get_insights",
         "get_goals",
+        "get_constraints",
         "get_availability",
         "get_previous_plan",
     ]
