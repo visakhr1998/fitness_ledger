@@ -35,7 +35,8 @@ Decisions already made:
 The sixteen muscle groups: chest, lats, upper_back, shoulders, quadriceps,
 hamstrings, glutes, biceps, triceps, abdominals, calves, traps, lower_back,
 forearms, abductors, adductors. `ledger targets` lists them with your current
-numbers.
+numbers, and **Edit weekly targets** on the Gym screen changes them. Targets are
+always per week; the Gym chart shows them scaled to the period you picked.
 
 ## Two kinds of time window
 
