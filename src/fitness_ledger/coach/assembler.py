@@ -17,7 +17,7 @@ from typing import Any
 from ..config import Config
 from ..db import SQLiteRepository
 from ..models import Plan
-from ..planning import allocate, empty_week, validate
+from ..planning import Ramp, allocate, continuity, empty_week, validate
 from ..queries import plan_adherence, planning_preferences  # noqa: F401  (re-export)
 
 
@@ -81,11 +81,13 @@ def assemble(
     # The weekly running distance comes from the stored target, the same way
     # set counts come from the volume target. The agent picks the days.
     running_target = repo.get_running_target()
+    ramp = ramp_from(ledger)
+    targets, shortfall = ramped(weekly_targets(ledger), deficits(ledger), ramp)
     allocation = allocate(
         with_targets(proposal.get("sessions") or [], result.get("exercise_pool")),
-        weekly_targets(ledger),
+        targets,
         prefs,
-        deficits=deficits(ledger),
+        deficits=shortfall,
         weekly_distance_km=(
             running_target.distance_km_per_week if running_target else None
         ),
@@ -100,11 +102,15 @@ def assemble(
     problems += unplannable(proposal.get("sessions") or [], allocation.sessions, known)
     problems += empty_week(allocation.sessions, result.get("training_days") or [])
 
+    kept = continuity(result.get("last_week_exercises") or {}, allocation.sessions)
+
     plan = Plan(
         week_start=week_start,
         sessions=allocation.sessions,
         rationale=proposal.get("rationale", ""),
-        trade_offs=_trade_offs(proposal.get("trade_offs", ""), allocation),
+        trade_offs=_trade_offs(
+            proposal.get("trade_offs", ""), allocation, ramp.note(), kept.note()
+        ),
         agent_trace=tuple(result.get("agent_trace") or ()),
     )
     if persist:
@@ -115,10 +121,46 @@ def assemble(
         "problems": problems,
         "unmet": allocation.unmet,
         "unplaced": list(allocation.unplaced),
+        "ramp": ramp.as_dict(),
+        "continuity": {
+            "kept": list(kept.kept),
+            "dropped": list(kept.dropped),
+            "added": list(kept.added),
+        },
     }
 
 
-def _trade_offs(stated: str, allocation) -> str:
+def ramp_from(ledger_state: dict[str, Any]) -> Ramp:
+    """The ramp the context reader computed, or none. Read, not recomputed, so
+    the week is scaled by exactly what the planner was told."""
+    raw = (ledger_state or {}).get("ramp") or {}
+    return Ramp(
+        factor=float(raw.get("factor", 1.0)),
+        break_weeks=int(raw.get("break_weeks", 0)),
+        weeks_back=int(raw.get("weeks_back", 0)),
+    )
+
+
+def ramped(
+    targets: dict[str, float], shortfall: dict[str, float], ramp: Ramp
+) -> tuple[dict[str, float], dict[str, float]]:
+    """Scale the week's targets for a return from a break (#62).
+
+    The shortfall is capped at the scaled target too. Otherwise, two months
+    off, every muscle is a full target behind, the week delivers half of it
+    by design, and "still short after allocation" lists every muscle group --
+    reporting the ramp as a failure to plan.
+    """
+    if not ramp.active:
+        return targets, shortfall
+    scaled = {muscle: target * ramp.factor for muscle, target in targets.items()}
+    capped = {
+        muscle: min(deficit, scaled.get(muscle, deficit)) for muscle, deficit in shortfall.items()
+    }
+    return scaled, capped
+
+
+def _trade_offs(stated: str, allocation, *notes: str) -> str:
     """The agent's account of what it gave up, plus what the arithmetic says.
 
     Both, deliberately. The agent explains its intent and the allocator knows
@@ -138,6 +180,9 @@ def _trade_offs(stated: str, allocation) -> str:
     if allocation.unplaced:
         names = ", ".join(m.replace("_", " ") for m in allocation.unplaced)
         parts.append(f"No exercise in this week trains: {names}.")
+    # Deterministic lines the arithmetic owns: the ramp after a break, and how
+    # much of last week's selection survived.
+    parts += [note for note in notes if note]
     return " ".join(parts)
 
 

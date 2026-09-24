@@ -17,8 +17,12 @@ import pytest
 from fitness_ledger.planning import (
     MAX_SETS_PER_EXERCISE,
     MIN_SETS_PER_EXERCISE,
+    RAMP_AFTER_LONG_BREAK,
+    RAMP_AFTER_SHORT_BREAK,
     Preferences,
     allocate,
+    continuity,
+    ramp,
     validate,
 )
 
@@ -397,3 +401,67 @@ def test_an_empty_week_with_no_available_days_is_correct():
     from fitness_ledger.planning import empty_week
 
     assert empty_week((), []) == []
+
+
+# --- coming back from a break (#62) --------------------------------------------
+
+T, E = True, False
+
+
+def test_no_break_means_the_full_target():
+    assert ramp([T] * 12).factor == 1.0
+
+
+def test_a_single_empty_week_is_not_a_break():
+    assert ramp([T, T, E, T, T]).factor == 1.0
+
+
+def test_the_first_week_after_a_long_break_is_at_half():
+    """#62: 60 sets planned for the first week after two months off, with
+    "Nothing sacrificed this week"."""
+    result = ramp([T] * 4 + [E] * 9)
+
+    assert result.factor == RAMP_AFTER_LONG_BREAK[0]
+    assert (result.break_weeks, result.weeks_back) == (9, 0)
+    assert "9 weeks with no lifting" in result.note()
+
+
+def test_the_ramp_rises_with_each_week_back_and_then_ends():
+    base = [T] * 4 + [E] * 9
+    factors = [ramp(base + [T] * back).factor for back in range(5)]
+
+    assert factors == [*RAMP_AFTER_LONG_BREAK, 1.0, 1.0]
+
+
+def test_a_short_break_ramps_less():
+    assert ramp([T] * 4 + [E] * 2).factor == RAMP_AFTER_SHORT_BREAK[0]
+
+
+def test_no_training_before_the_gap_is_not_evidence_of_a_break():
+    """A ledger that starts empty is a new user or an unsynced one; halving
+    their week on no evidence would be an invented number."""
+    assert ramp([E] * 10 + [T]).factor == 1.0
+    assert ramp([E] * 6).factor == 1.0
+    assert ramp([]).factor == 1.0
+
+
+# --- continuity (#63) -----------------------------------------------------------
+
+
+def test_continuity_names_what_was_kept_and_dropped():
+    """Two plans from identical state shared under half their exercises; the
+    turnover is now measured, not guessed at."""
+    week = allocate(
+        [lift(MON, ("bench", ["chest"]), ("row", ["lats"]))], {"chest": 6, "lats": 6}
+    ).sessions
+
+    result = continuity({"bench": "Bench", "squat": "Squat"}, week)
+
+    assert result.kept == ("Bench",)
+    assert result.dropped == ("Squat",)
+    assert result.added == ("Row",)
+    assert result.note() == "Kept 1 of 2 exercises from last week's plan. Dropped: Squat."
+
+
+def test_no_previous_plan_says_nothing():
+    assert continuity({}, ()).note() == ""

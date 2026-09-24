@@ -100,6 +100,9 @@ def test_the_ledger_state_carries_what_a_planner_needs(bound):
         # uses. Both are kept because they answer different questions.
         "volume", "volume_trend", "progression", "runs", "runs_last_week",
         "recovery", "insights",
+        # Whether the week follows a break (#62), so the assembler scales by
+        # exactly what the planner was told.
+        "ramp",
     }
     assert any(m["muscle_group"] == "chest" for m in ledger["volume"]["muscles"])
 
@@ -370,3 +373,36 @@ def test_the_free_day_rule_disappears_without_a_running_target(bound):
     repo.set_running_target(RunningTarget(distance_km_per_week=25.0, sessions_per_week=3))
     with_target = running_day_note(gather_context(repo, config))
     assert "Leave at least one" in with_target
+
+
+
+def test_the_ramp_is_measured_from_logged_weeks(bound):
+    """The fixture trained a week ago and nothing before it in the window, so
+    there is no evidence of a break -- the full target applies."""
+    repo, config = bound
+    assert gather_context(repo, config)["ledger_state"]["ramp"]["factor"] == 1.0
+
+
+def test_last_weeks_plan_is_handed_over_not_this_weeks_draft(bound):
+    """#63: `previous_plan` is the latest plan of any week, which after a
+    replan is this week's own draft. Continuity is with last week."""
+    from fitness_ledger.coach.context import derive_summaries
+    from fitness_ledger.models import Plan, PlannedExercise, PlannedSession
+
+    repo, config = bound
+    week = next_monday(TODAY)
+    last = week - timedelta(days=7)
+    repo.add_plan(Plan(week_start=last, sessions=(PlannedSession(
+        local_date=last, kind="lift",
+        exercises=(PlannedExercise("BENCH", "Bench Press", 3, ("chest",)),),
+    ),)))
+    repo.add_plan(Plan(week_start=week, sessions=(PlannedSession(
+        local_date=week, kind="lift",
+        exercises=(PlannedExercise("DRAFT", "Draft Only", 3, ("chest",)),),
+    ),)))
+
+    state = gather_context(repo, config, week)
+
+    assert state["last_week_exercises"] == {"BENCH": "Bench Press"}
+    rendered = derive_summaries(state)["continuity_exercises"]
+    assert "BENCH  Bench Press" in rendered and "Draft Only" not in rendered

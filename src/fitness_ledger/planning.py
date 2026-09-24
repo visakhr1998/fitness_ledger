@@ -310,6 +310,149 @@ def _fit_session(
     return counts
 
 
+# --- coming back from a break (#62) -----------------------------------------
+
+# Weeks with no lifting logged before they count as a break rather than a busy
+# week. One empty week is life; two in a row is a layoff worth ramping from.
+LAYOFF_WEEKS = 2
+
+# From this many empty weeks on, a break is long: detraining is real and the
+# first week back starts lower.
+LONG_LAYOFF_WEEKS = 4
+
+# Fraction of the weekly target for the first, second, ... week back. Index 0 is
+# the first week planned after the break. Past the end of the tuple the full
+# target applies. Deliberately coarse -- the point is not to prescribe a return
+# protocol but to stop "60 sets in the first week after two months off"
+# reading as "nothing sacrificed".
+RAMP_AFTER_LONG_BREAK = (0.5, 0.65, 0.8)
+RAMP_AFTER_SHORT_BREAK = (0.7, 0.85)
+
+
+@dataclass(frozen=True)
+class Ramp:
+    """How much of the weekly target this week should carry.
+
+    `factor` scales the target before allocation. 1.0 is a normal week.
+    """
+
+    factor: float = 1.0
+    break_weeks: int = 0
+    weeks_back: int = 0
+
+    @property
+    def active(self) -> bool:
+        return self.factor < 1.0
+
+    def note(self) -> str:
+        """The sentence the planner and the trade-offs carry. Empty when inactive."""
+        if not self.active:
+            return ""
+        which = (
+            "the first week back"
+            if self.weeks_back == 0
+            else f"week {self.weeks_back + 1} back"
+        )
+        return (
+            f"Targets are at {round(self.factor * 100)}% for {which} after"
+            f" {self.break_weeks} weeks with no lifting logged, rising to the full"
+            " target over the next weeks."
+        )
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "factor": self.factor,
+            "break_weeks": self.break_weeks,
+            "weeks_back": self.weeks_back,
+            "note": self.note(),
+        }
+
+
+def ramp(trained: list[bool]) -> Ramp:
+    """The ramp for the week after `trained`, a flag per week, oldest first.
+
+    The last flag is the week just before the one being planned (the current,
+    possibly part-finished week counts: a session in it is a week back). The
+    most recent run of at least `LAYOFF_WEEKS` empty weeks is the break;
+    trained weeks after it are the weeks already back.
+
+    **No training before the break means no ramp.** A window that is empty from
+    its first week cannot tell a layoff from a ledger that simply starts there
+    -- a new user, or a sync that has not run -- and scaling a newcomer's week
+    by half on no evidence would be the invented number this module exists to
+    prevent.
+    """
+    weeks_back = 0
+    index = len(trained) - 1
+    while index >= 0:
+        if trained[index]:
+            weeks_back += 1
+            index -= 1
+            continue
+        empty = 0
+        while index >= 0 and not trained[index]:
+            empty += 1
+            index -= 1
+        if empty >= LAYOFF_WEEKS:
+            if index < 0:
+                return Ramp()  # nothing before the gap: no evidence of a break
+            schedule = (
+                RAMP_AFTER_LONG_BREAK if empty >= LONG_LAYOFF_WEEKS else RAMP_AFTER_SHORT_BREAK
+            )
+            if weeks_back >= len(schedule):
+                return Ramp()
+            return Ramp(factor=schedule[weeks_back], break_weeks=empty, weeks_back=weeks_back)
+        # A single empty week is not a break. Its weeks are not "weeks back"
+        # either -- keep walking to find the break, if there is one.
+    return Ramp()
+
+
+# --- week-to-week continuity (#63) --------------------------------------------
+
+
+@dataclass(frozen=True)
+class Continuity:
+    """How much of last week's exercise selection this week kept."""
+
+    kept: tuple[str, ...] = ()
+    dropped: tuple[str, ...] = ()
+    added: tuple[str, ...] = ()
+
+    @property
+    def previous(self) -> int:
+        return len(self.kept) + len(self.dropped)
+
+    def note(self) -> str:
+        if not self.previous:
+            return ""
+        line = f"Kept {len(self.kept)} of {self.previous} exercises from last week's plan."
+        if self.dropped:
+            line += f" Dropped: {', '.join(self.dropped)}."
+        return line
+
+
+def continuity(
+    previous: dict[str, str], planned: tuple[PlannedSession, ...]
+) -> Continuity:
+    """Compare last week's exercises (id -> title) with this week's.
+
+    Measured rather than trusted. Two plans from identical state shared less
+    than half their exercises, and progress on a lift cannot be read if the
+    lift is not there next week; the planner is now asked to keep them, and
+    this is how anyone can tell whether it did.
+    """
+    now = {
+        exercise.exercise_template_id: exercise.title
+        for session in planned
+        for exercise in session.exercises
+    }
+    return Continuity(
+        kept=tuple(sorted(previous[i] for i in previous if i in now)),
+        dropped=tuple(sorted(previous[i] for i in previous if i not in now)),
+        added=tuple(sorted(now[i] for i in now if i not in previous)),
+    )
+
+
 # --- validation -------------------------------------------------------------
 
 

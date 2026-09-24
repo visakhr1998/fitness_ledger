@@ -380,3 +380,33 @@ def test_an_unknown_exercise_is_left_as_it_came():
     )
 
     assert filled[0]["exercises"][0]["targets"] == []
+
+
+
+def test_a_ramp_scales_the_week_and_caps_the_reported_shortfall(repo):
+    """#62: the week is scaled by the ramp the planner was told about, and the
+    shortfall is capped at the scaled target -- otherwise every muscle reads as
+    "still short" in a week that is short on purpose."""
+    from fitness_ledger.config import Config
+
+    full = assembler.assemble(repo, Config.load(), a_result(), persist=False)
+    result = a_result()
+    result["ledger_state"]["ramp"] = {"factor": 0.5, "break_weeks": 9, "weeks_back": 0}
+    half = assembler.assemble(repo, Config.load(), result, persist=False)
+
+    assert half["plan"].total_sets < full["plan"].total_sets
+    assert "chest" not in half["unmet"]
+    assert "Targets are at 50%" in half["plan"].trade_offs
+
+
+def test_continuity_with_last_weeks_plan_is_reported(repo):
+    from fitness_ledger.config import Config
+
+    result = a_result()
+    result["last_week_exercises"] = {"BENCH": "Bench", "SQUAT": "Squat"}
+
+    out = assembler.assemble(repo, Config.load(), result, persist=False)
+
+    assert out["continuity"]["kept"] == ["Bench"]
+    assert out["continuity"]["dropped"] == ["Squat"]
+    assert "Kept 1 of 2 exercises" in out["plan"].trade_offs

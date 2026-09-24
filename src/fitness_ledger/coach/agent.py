@@ -166,6 +166,9 @@ Exercises you may use, with the id to copy and the muscles each trains:
 That is the whole pool. It already includes something for every muscle group
 that is short, so there is nothing to widen it to.
 
+Coming back from a break:
+{ramp_note}
+
 Whether each lift is due to go up, and at what load:
 {progression_summary}
 
@@ -212,6 +215,13 @@ Rules you must not break:
    movement can absorb a muscle's whole weekly target however short it is --
    what the cap cuts off is reported as unmet. Where the pool offers more than
    one exercise for a short muscle, use more than one.
+
+3c. Keep last week's exercises. Progress on a lift can only be read if the same
+   lift is there again next week, so where last week used an exercise for a
+   muscle this week also trains, use that same exercise again. Swap one only
+   when it is not in this week's pool, or to serve a muscle it cannot, and say
+   which in the rationale. Last week's plan used:
+{continuity_exercises}
 
 4. Only use the training days listed above. The others are unavailable.
 
@@ -856,6 +866,9 @@ async def _run_coach(
         # allocates against the same deficit the agent was shown.
         "ledger_state": state.get("ledger_state", {}),
         "exercise_pool": state.get("exercise_pool", []),
+        # Measured against in `assemble`, so a turnover the planner was asked
+        # not to make is reported rather than guessed at.
+        "last_week_exercises": state.get("last_week_exercises", {}),
         # Named, not silent. A week planned by the backstop is still a valid
         # week, but you should be able to tell -- if every plan is arriving
         # this way the primary is not really the primary any more.
