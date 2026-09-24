@@ -16,9 +16,10 @@ from .config import Config
 from .db import SQLiteRepository
 from .insights import detect
 from .models import WORKING_SET_TYPES, Goal, Plan, VolumeTarget
-from .planning import Adherence, Preferences, adherence
+from .planning import Adherence, Preferences, Ramp, adherence, ramp
 from .progression import RepRange, main_lifts, progression_state, stalled
 from .volume import (
+    best_reps_per_session,
     best_set_per_session,
     compute_volume,
     coverage,
@@ -451,6 +452,22 @@ def planning_preferences(repo: SQLiteRepository) -> Preferences:
     return Preferences(**values)
 
 
+# How far back to look for a break. Long enough to see training before the
+# longest layoff the ramp schedule still acts on.
+RAMP_LOOKBACK_WEEKS = 16
+
+
+def training_ramp(repo: SQLiteRepository, config: Config) -> Ramp:
+    """Whether next week follows a break from lifting, and how far back in (#62).
+
+    The gathering half: one flag per week from the logged workouts, handed to
+    the pure `planning.ramp`. The current week is included, part-finished as it
+    is -- a session logged in it is a session back.
+    """
+    rows = volume_trend(repo, config, weeks=RAMP_LOOKBACK_WEEKS, include_current=True)["weeks"]
+    return ramp([row["workouts"] > 0 for row in rows])
+
+
 def plan_adherence(repo: SQLiteRepository, plan: Plan | None) -> Adherence:
     """How much of a stored plan was actually trained.
 
@@ -627,6 +644,34 @@ def goal_progress(repo: SQLiteRepository, config: Config, goal: Goal) -> dict[st
                 f"{report['change_kg']:+g} kg over the window"
                 if sessions
                 else "nothing logged for this lift in the last 12 weeks"
+            ),
+        }
+
+    if goal.type == "reps" and goal.subject:
+        matches = find_exercise(repo, goal.subject, limit=1)
+        if not matches:
+            return {
+                **measured,
+                "measurable": False,
+                "detail": f"No exercise matching {goal.subject!r} found in the catalog.",
+            }
+        template = matches[0]
+        end = date.today() + timedelta(days=1)
+        start = end - timedelta(weeks=12)
+        sessions = best_reps_per_session(repo.get_sets(start, end), template["id"])
+        latest = sessions[-1] if sessions else None
+        load = f" at {latest['weight_kg']:g} kg" if latest and latest["weight_kg"] else ""
+        return {
+            **measured,
+            "subject": template["title"],
+            "current": latest["reps"] if latest else None,
+            "fraction": _fraction(latest["reps"] if latest else None, goal.target_value),
+            "unit": "reps",
+            "window": describe_window(start, end),
+            "detail": (
+                f"best set in the latest of {len(sessions)} sessions{load}"
+                if latest
+                else "nothing logged for this exercise in the last 12 weeks"
             ),
         }
 

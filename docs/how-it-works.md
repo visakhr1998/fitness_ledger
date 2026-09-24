@@ -97,6 +97,13 @@ Most runs land somewhere near 1. What matters is the direction over a month, not
 the number. AEI removes the effect of hills; it does **not** remove the effect of
 distance, so only compare runs of similar length.
 
+The hill correction is large. At the same heart rate, a stretch with 22 m of
+climb over 670 m scores 29% higher than the same stretch on the flat, and
+doubling the hills adds another 15%. That is the formula doing its job, since
+climbing is more work per heartbeat, but it rests entirely on the gradient
+model. A trend is most trustworthy on a route you repeat; comparing a hilly
+route with a flat one mixes that model into the reading.
+
 Gradient is averaged over **25 m chunks**, never per GPS sample. Sample-by-sample
 altitude noise put the 95th-percentile gradient at 41% on a flat run — and that
 error doesn't cancel out, because climbing costs more than descending saves, so

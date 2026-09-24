@@ -195,7 +195,7 @@ Two rules, both learned the hard way:
 ## Working here
 
 ```bash
-./.venv/Scripts/python.exe -m pytest              # 619 tests (coach tests skip without the extra)
+./.venv/Scripts/python.exe -m pytest              # 633 tests (coach tests skip without the extra)
 cd frontend && npm run build                      # required after any frontend change
 ./.venv/Scripts/python.exe -m fitness_ledger.cli doctor
 ./.venv/Scripts/python.exe -m fitness_ledger.cli sync
@@ -323,6 +323,14 @@ per plan in `UNDERSTANDING.md` -- and never a looser assertion.
   extra** (`pip install -e ".[coach]"`), so nothing else depends on it: ADK
   declares 25 direct dependencies and resolves to roughly 118 packages. The
   dashboard must keep working without it.
+- **A hard-rule violation re-plans; it is not stored beside the plan.**
+  `_ask_until_usable` runs `assemble(persist=False)` on each attempt and asks
+  again, naming what broke (`replan_note`), until the week is clean or attempts
+  run out -- then the fewest-violations week is kept (#56). Standing
+  constraints are hard rules checked in `validate` (#70), and run-after-legs is
+  on by default (#61); both were only safe once violations re-planned. An empty
+  week is never stored (#55). Every new rule belongs in `validate`, so the retry
+  loop and the stored plan cannot disagree about what counts.
 - **One exercise cannot absorb a muscle's whole weekly target.**
   `MAX_SETS_PER_EXERCISE` is 4, lowered from 6 on 2026-09-20 for #69: a muscle
   on a 14-set target that the planner served with one movement took all of it

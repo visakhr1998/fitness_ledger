@@ -9,7 +9,8 @@ that gap: it reads a paragraph and proposes the structured records behind it.
 Three properties hold it to the same line as the rest of the app:
 
 - **It proposes; it never saves.** `parse` returns a proposal the user confirms
-  in the UI, which then calls the existing goal and constraint endpoints. Same
+  in the UI, which then calls the existing goal, constraint, running-target and
+  availability endpoints. Same
   shape as Hevy write-back, for the same reason: nothing this app writes should
   be something the user did not look at first.
 
@@ -28,6 +29,7 @@ from __future__ import annotations
 
 import re
 from datetime import date as date_cls
+from datetime import timedelta
 from typing import Any
 
 from . import llm
@@ -39,7 +41,12 @@ from .models import (
     WEEKDAY_NAMES,
     Goal,
     RecurringConstraint,
+    RunningTarget,
 )
+
+# How far ahead a stated day off may land. The prompt lists this many dates to
+# choose from, so a date outside it is one the model worked out for itself.
+CALENDAR_DAYS = 14
 
 # Signs that belong to a clinician rather than a training plan. Deliberately
 # *narrow*: these are red flags -- mechanical failure, nerve symptoms, a joint
@@ -161,9 +168,31 @@ Goal types:
 - strength_1rm: a target one-rep max for one lift. `subject` is the exercise
   name as the person said it. `target_value` is kilograms; convert from pounds
   if needed. "Stuck at 80kg and want more" names no target, so it is `unclear`.
-- running_volume: a target weekly distance in kilometres.
+- reps: a target number of reps in one set of one exercise. `subject` is the
+  exercise name as the person said it. `target_value` is the rep count -- "get
+  from 5 pull-ups to 10" is 10. Use this, not strength_1rm, whenever the
+  number is reps rather than kilograms.
+- running_volume: a weekly distance to build up to, as an ambition -- "get up
+  to 40 km a week by spring".
 - running_aei: a target aerobic efficiency index. Rare; only if named.
 - consistency: a target number of sessions per week.
+
+A weekly running routine is NOT a goal. "I want to run 25km across 3 sessions
+per week" describes what a normal week should hold, and goes in
+`running_target` with both numbers -- never as a running_volume goal plus a
+consistency goal. The planner places runs from `running_target` and ignores
+goals when it does. If only one of the two numbers is given, record what was
+said in `unclear` and say the running target needs both a weekly distance and a
+number of runs.
+
+A one-off day the person cannot train -- "I can't train this Friday", "away
+on the 3rd" -- goes in `unavailable_dates`, with the date copied from the
+calendar below. It is not a constraint: a constraint is every week. If the day
+is not in the calendar, put the sentence in `unclear` rather than working out a
+date.
+
+Calendar of the next {calendar_days} days:
+{calendar}
 
 Constraints are standing weekly restrictions, not one-off missed days.
 `weekday` is 0 for Monday through 6 for Sunday. `kind` is one of \
@@ -200,13 +229,16 @@ def build_tool() -> dict[str, Any]:
                             "subject": {
                                 "type": "string",
                                 "description": (
-                                    "exercise name for strength_1rm, race distance "
-                                    "for race_time, omitted otherwise"
+                                    "exercise name for strength_1rm and reps, race "
+                                    "distance for race_time, omitted otherwise"
                                 ),
                             },
                             "target_value": {
                                 "type": "number",
-                                "description": "seconds for race_time, kg for strength_1rm",
+                                "description": (
+                                    "seconds for race_time, kg for strength_1rm, "
+                                    "reps for reps"
+                                ),
                             },
                             "target_date": {
                                 "type": "string",
@@ -232,6 +264,33 @@ def build_tool() -> dict[str, Any]:
                         "required": ["weekday", "kind"],
                     },
                 },
+                "running_target": {
+                    "type": "object",
+                    "description": (
+                        "The weekly running routine, only when both a weekly "
+                        "distance and a number of runs were stated."
+                    ),
+                    "properties": {
+                        "distance_km_per_week": {"type": "number"},
+                        "sessions_per_week": {"type": "integer"},
+                    },
+                    "required": ["distance_km_per_week", "sessions_per_week"],
+                },
+                "unavailable_dates": {
+                    "type": "array",
+                    "description": "One-off days the person cannot train.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "date": {
+                                "type": "string",
+                                "description": "YYYY-MM-DD, copied from the calendar",
+                            },
+                            "reason": {"type": "string"},
+                        },
+                        "required": ["date"],
+                    },
+                },
                 "unclear": {
                     "type": "array",
                     "description": "Anything stated that did not map to a field.",
@@ -248,6 +307,25 @@ def build_system_prompt(today: str) -> str:
         race_distances=", ".join(sorted(RACE_DISTANCES_KM)),
         constraint_kinds=", ".join(sorted(CONSTRAINT_KINDS)),
         today=today,
+        calendar_days=CALENDAR_DAYS,
+        calendar=calendar(today),
+    )
+
+
+def calendar(today: str) -> str:
+    """The next two weeks as "Friday 2026-09-25" lines.
+
+    "This Friday" has to become a date somewhere, and working out which date
+    is arithmetic -- the thing no model in this app is trusted with. Listing the
+    dates turns it into a lookup, and `_unavailable_from` refuses anything
+    outside the list, so a date the model computed for itself cannot slip in.
+    """
+    start = date_cls.fromisoformat(today)
+    return "\n".join(
+        f"  {WEEKDAY_NAMES[day.weekday()]} {day.isoformat()}"
+        + (" (today)" if offset == 0 else "")
+        for offset in range(CALENDAR_DAYS)
+        for day in (start + timedelta(days=offset),)
     )
 
 
@@ -287,12 +365,53 @@ def _constraint_from(raw: dict[str, Any]) -> tuple[RecurringConstraint | None, s
         return None, f"{raw!r}: {exc}"
 
 
+def _running_target_from(raw: Any) -> tuple[RunningTarget | None, str | None]:
+    """The weekly running routine, or why it was refused (#57).
+
+    Both numbers or nothing: a target with a made-up run count would plan runs
+    nobody asked for, and `RunningTarget`'s default of 2 is exactly that.
+    """
+    if not raw:
+        return None, None
+    if not isinstance(raw, dict):
+        return None, f"running target {raw!r}: not a record"
+    try:
+        distance = float(raw["distance_km_per_week"])
+        sessions = int(raw["sessions_per_week"])
+    except (KeyError, TypeError, ValueError) as exc:
+        return None, f"running target {raw!r}: needs a weekly distance and a number of runs ({exc})"
+    if not 0 < distance <= 300 or not 1 <= sessions <= 14:
+        return None, f"running target {raw!r}: out of range"
+    return RunningTarget(distance_km_per_week=distance, sessions_per_week=sessions), None
+
+
+def _unavailable_from(raw: Any, today: str) -> tuple[dict[str, Any] | None, str | None]:
+    """One stated day off, or why it was refused (#58).
+
+    Only dates from the calendar the prompt listed are accepted. Anything else
+    is a date the model derived rather than looked up, and a wrong day off is
+    worse than none: it silently takes a training day away.
+    """
+    if not isinstance(raw, dict):
+        return None, f"day off {raw!r}: not a record"
+    start = date_cls.fromisoformat(today)
+    try:
+        day = date_cls.fromisoformat(str(raw.get("date", "")))
+    except ValueError:
+        return None, f"day off {raw!r}: not a YYYY-MM-DD date"
+    if not start <= day < start + timedelta(days=CALENDAR_DAYS):
+        return None, f"day off {day.isoformat()}: not within the next {CALENDAR_DAYS} days"
+    return {"date": day.isoformat(), "reason": raw.get("reason") or None}, None
+
+
 def empty_proposal(**overrides: Any) -> dict[str, Any]:
     """The proposal envelope. One shape for every outcome, so the UI never has
     to branch on which fields exist."""
     proposal: dict[str, Any] = {
         "goals": [],
         "constraints": [],
+        "running_target": None,
+        "unavailable": [],
         "unclear": [],
         "rejected": [],
         "safety": None,
@@ -316,7 +435,8 @@ async def parse(config: Config, text: str, today: str | None = None) -> dict[str
     if flags:
         return empty_proposal(safety=flags, message=SAFETY_REFERRAL)
 
-    system = build_system_prompt(today or date_cls.today().isoformat())
+    today = today or date_cls.today().isoformat()
+    system = build_system_prompt(today)
     transport = llm.build(config, system, [build_tool()])
     transport.ask(text)
     turn = await transport.turn()
@@ -349,9 +469,23 @@ async def parse(config: Config, text: str, today: str | None = None) -> dict[str
         else:
             rejected.append(problem or "")
 
+    target, problem = _running_target_from(args.get("running_target"))
+    if problem:
+        rejected.append(problem)
+
+    unavailable: list[dict[str, Any]] = []
+    for raw in args.get("unavailable_dates") or []:
+        day, problem = _unavailable_from(raw, today)
+        if day:
+            unavailable.append(day)
+        else:
+            rejected.append(problem or "")
+
     return empty_proposal(
         goals=goals,
         constraints=constraints,
+        running_target=target.as_dict() if target else None,
+        unavailable=unavailable,
         unclear=[str(item) for item in (args.get("unclear") or [])],
         rejected=rejected,
     )
@@ -374,6 +508,8 @@ def describe_goal(goal: dict[str, Any]) -> str:
         return f"{subject.replace('_', ' ')} in {clock}"
     if kind == "strength_1rm":
         return f"{subject} one-rep max of {value:g} kg"
+    if kind == "reps":
+        return f"{value:g} {subject} in one set"
     if kind == "running_volume":
         return f"{value:g} km a week"
     if kind == "consistency":

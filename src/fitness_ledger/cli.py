@@ -406,6 +406,10 @@ async def cmd_plan(config: Config, args: argparse.Namespace) -> int:
 
     print()
     print("  (proposed only -- nothing written to Hevy)")
+    # An empty week is reported and never stored (#55). Exit non-zero so a
+    # scheduled run can tell a failure to plan from a week that was planned.
+    if not args.dry_run and not assembled["stored"]:
+        return 1
     return 0
 
 
@@ -553,9 +557,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_goals = sub.add_parser("goals", help="show or set training goals and the running target")
     p_goals.add_argument(
         "--add", metavar="TYPE=VALUE",
-        help="e.g. strength_1rm=100 (with --subject), running_volume=25, consistency=4",
+        help="e.g. strength_1rm=100 or reps=10 (with --subject), running_volume=25, consistency=4",
     )
-    p_goals.add_argument("--subject", help="exercise name, required for strength_1rm")
+    p_goals.add_argument("--subject", help="exercise name, required for strength_1rm and reps")
     p_goals.add_argument("--by", metavar="YYYY-MM-DD", help="optional target date")
     p_goals.add_argument("--done", type=int, metavar="ID", help="mark a goal achieved")
     p_goals.add_argument("--abandon", action="store_true", help="with --done, mark abandoned instead")

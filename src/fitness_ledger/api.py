@@ -461,6 +461,20 @@ async def _run_plan(week: str | None) -> None:
                 raise RuntimeError("the coach returned no proposal")
             assembled = assemble(repository, _config, result, persist=True)
 
+        if not assembled["stored"]:
+            # An empty week is a failure to plan, not a plan (#55). It used to
+            # be stored, so the Week tab showed a plan with nothing in it next
+            # to the explanation; now the explanation is the error.
+            _plan_state.update(
+                {
+                    "status": "error",
+                    "error": " ".join(assembled["problems"])
+                    or "the coach returned a week with no training in it",
+                    "attempts": result.get("attempts"),
+                }
+            )
+            return
+
         plan = assembled["plan"]
         _plan_state.update(
             {
@@ -468,6 +482,10 @@ async def _run_plan(week: str | None) -> None:
                 "week": plan.week_start.isoformat(),
                 "plan_id": plan.id,
                 "problems": assembled["problems"],
+                "attempts": result.get("attempts"),
+                # What earlier attempts at this week broke before this one was
+                # kept (#56). Empty when the first attempt was clean.
+                "rejected_attempts": result.get("rejected_attempts") or [],
                 "planned_by": result.get("planned_by"),
                 "fell_back": bool(result.get("fell_back_from")),
             }

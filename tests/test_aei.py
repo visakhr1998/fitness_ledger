@@ -292,3 +292,71 @@ def test_the_two_beat_definitions_agree():
     assert aei.beats_from_segments(segments) == pytest.approx(
         aei.total_beats(points), rel=0.02
     )
+
+
+# --- how far terrain moves the number (#64) --------------------------------
+#
+# UAT row R2 asked whether AEI stays stable on a different elevation profile.
+# That needs two real runs on different terrain, which cannot be fabricated --
+# so this bounds the sensitivity directly instead: the same real trackpoints,
+# same heart rate, with the elevation profile scaled about its mean. Scale 0 is
+# the same run on a flat road; 1 is the run as recorded (22 m of relief over
+# 674 m); 2 is the same route with its hills twice as tall.
+
+
+def _with_relief(points, scale):
+    from dataclasses import replace
+
+    heights = [p.altitude_m for p in points if p.altitude_m is not None]
+    mean = sum(heights) / len(heights)
+    return [
+        replace(p, altitude_m=None if p.altitude_m is None else mean + (p.altitude_m - mean) * scale)
+        for p in points
+    ]
+
+
+@pytest.fixture(scope="module")
+def slice_points():
+    return parse_tcx(FIXTURE.read_text(encoding="utf-8"))
+
+
+def test_terrain_changes_distance_credit_but_never_the_heartbeats(slice_points):
+    """Elevation enters through the adjusted distance only. If it moved the
+    beat count, a hilly run would be scored twice."""
+    flat = aei.compute(_with_relief(slice_points, 0), date(2026, 7, 29))
+    hilly = aei.compute(_with_relief(slice_points, 2), date(2026, 7, 29))
+
+    assert hilly.total_beats == flat.total_beats
+    assert flat.adjusted_distance_m == pytest.approx(flat.actual_distance_m)
+
+
+def test_more_relief_always_scores_higher(slice_points):
+    """Monotonic, because climbing costs more than descending saves: scaling a
+    profile that goes up and down adds more credit on the climbs than it takes
+    away on the descents."""
+    scores = [
+        aei.compute(_with_relief(slice_points, scale), date(2026, 7, 29)).aei
+        for scale in (0, 0.5, 1, 1.5, 2)
+    ]
+    assert scores == sorted(scores)
+
+
+def test_the_size_of_the_terrain_effect_is_pinned(slice_points):
+    """The bound R2 could not measure, measured.
+
+    At the same heart rate, this route as recorded scores 29% above the same
+    run flattened, and doubling the hills adds a further 15% -- sub-linear,
+    because the per-bin grade is clamped at 30% and the 25 m bins smooth the
+    steepest pitches. So terrain is a first-order input by design: an AEI from
+    a hilly route and one from a flat route differ by tens of percent before
+    fitness enters, which is the confound in #64's highest-scoring run.
+    """
+    ratio = {
+        scale: aei.compute(_with_relief(slice_points, scale), date(2026, 7, 29)).aei
+        for scale in (0, 1, 2)
+    }
+
+    assert ratio[1] / ratio[0] == pytest.approx(1.29, abs=0.01)
+    assert ratio[2] / ratio[1] == pytest.approx(1.15, abs=0.01)
+    # Sub-linear: the second doubling of relief buys less than the first.
+    assert ratio[2] - ratio[1] < ratio[1] - ratio[0]

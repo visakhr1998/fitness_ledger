@@ -315,6 +315,12 @@ export type GoalsSection = {
 export type IntakeProposal = {
   goals: Goal[];
   constraints: Omit<RecurringConstraint, "id">[];
+  /** The weekly running routine, when both numbers were stated. Saved through
+   *  /api/running-target — it is what the planner places runs from, which a
+   *  running_volume goal is not. */
+  running_target: { distance_km_per_week: number; sessions_per_week: number } | null;
+  /** One-off days off, already checked to fall within the next two weeks. */
+  unavailable: { date: string; reason: string | null }[];
   unclear: string[];
   rejected: string[];
   safety: string[] | null;
