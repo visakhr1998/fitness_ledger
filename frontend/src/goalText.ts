@@ -61,6 +61,19 @@ export function describeConstraint(constraint: {
   return `${weekday}s: ${label}${constraint.reason ? ` (${constraint.reason})` : ""}`;
 }
 
+/** A one-off day off, with its weekday, so "this Friday" can be checked
+ *  against the date the intake resolved it to.
+ *
+ *  Built from the parts rather than `new Date("2026-09-04")`, which parses as
+ *  UTC midnight and shows the previous day anywhere west of Greenwich. */
+export function describeDayOff(isoDate: string): string {
+  const [year, month, day] = isoDate.split("-").map(Number);
+  const local = new Date(year, month - 1, day);
+  // getDay() counts from Sunday; WEEKDAYS counts from Monday like the backend.
+  const weekday = WEEKDAYS[(local.getDay() + 6) % 7] ?? "?";
+  return `${weekday} ${isoDate}`;
+}
+
 
 /** Which screen a goal belongs on.
  *
