@@ -110,7 +110,7 @@ class VolumeTarget:
 # --- what the coach plans toward -------------------------------------------
 
 GOAL_TYPES = frozenset(
-    {"strength_1rm", "running_volume", "running_aei", "consistency", "race_time"}
+    {"strength_1rm", "reps", "running_volume", "running_aei", "consistency", "race_time"}
 )
 GOAL_STATUSES = frozenset({"active", "achieved", "abandoned"})
 
@@ -143,8 +143,8 @@ class Goal:
     """
 
     type: str
-    target_value: float  # kg for strength, km for volume, *seconds* for race_time
-    subject: str | None = None  # exercise for strength, race distance for race_time
+    target_value: float  # kg for strength, reps for reps, km for volume, *seconds* for race_time
+    subject: str | None = None  # exercise for strength and reps, race distance for race_time
     target_date: date | None = None
     status: str = "active"
     id: int | None = None  # assigned by storage
@@ -168,6 +168,14 @@ class Goal:
             )
         if self.type == "strength_1rm" and not self.subject:
             raise ValueError("a strength_1rm goal needs a subject (the exercise)")
+        # Reps in one set of one exercise -- "from 5 pull-ups to 10" (#59).
+        # Bodyweight movements have no load to advance, so reps are the only
+        # axis a goal for them can name.
+        if self.type == "reps":
+            if not self.subject:
+                raise ValueError("a reps goal needs a subject (the exercise)")
+            if self.target_value < 1:
+                raise ValueError("a reps goal needs a target of at least one rep")
         # A race goal without a distance is not a goal: "under four hours" is
         # meaningless until you say four hours of what, and every pace derived
         # from it needs the distance to divide by.

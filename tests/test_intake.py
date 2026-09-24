@@ -304,3 +304,17 @@ def test_the_prompt_forbids_the_model_from_proposing_volumes():
     prompt = intake.build_system_prompt("2026-08-29")
     assert "Never propose training volumes" in prompt
     assert "You extract intent, not programming" in prompt
+
+
+def test_a_rep_target_becomes_a_reps_goal_not_unclear(monkeypatch):
+    """#59: the model named the gap itself -- "a target number of reps for
+    pull-ups, which does not map to a goal type"."""
+    result, _ = run(
+        monkeypatch,
+        proposal_turn(goals=[{"type": "reps", "subject": "pull-ups", "target_value": 10}]),
+        "I need to improve my pull-ups from 5 to 10 by end of year.",
+    )
+
+    [goal] = result["goals"]
+    assert goal["type"] == "reps"
+    assert intake.describe_goal(goal) == "10 pull-ups in one set"

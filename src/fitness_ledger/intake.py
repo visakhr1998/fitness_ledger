@@ -161,6 +161,10 @@ Goal types:
 - strength_1rm: a target one-rep max for one lift. `subject` is the exercise
   name as the person said it. `target_value` is kilograms; convert from pounds
   if needed. "Stuck at 80kg and want more" names no target, so it is `unclear`.
+- reps: a target number of reps in one set of one exercise. `subject` is the
+  exercise name as the person said it. `target_value` is the rep count -- "get
+  from 5 pull-ups to 10" is 10. Use this, not strength_1rm, whenever the
+  number is reps rather than kilograms.
 - running_volume: a target weekly distance in kilometres.
 - running_aei: a target aerobic efficiency index. Rare; only if named.
 - consistency: a target number of sessions per week.
@@ -200,13 +204,16 @@ def build_tool() -> dict[str, Any]:
                             "subject": {
                                 "type": "string",
                                 "description": (
-                                    "exercise name for strength_1rm, race distance "
-                                    "for race_time, omitted otherwise"
+                                    "exercise name for strength_1rm and reps, race "
+                                    "distance for race_time, omitted otherwise"
                                 ),
                             },
                             "target_value": {
                                 "type": "number",
-                                "description": "seconds for race_time, kg for strength_1rm",
+                                "description": (
+                                    "seconds for race_time, kg for strength_1rm, "
+                                    "reps for reps"
+                                ),
                             },
                             "target_date": {
                                 "type": "string",
@@ -374,6 +381,8 @@ def describe_goal(goal: dict[str, Any]) -> str:
         return f"{subject.replace('_', ' ')} in {clock}"
     if kind == "strength_1rm":
         return f"{subject} one-rep max of {value:g} kg"
+    if kind == "reps":
+        return f"{value:g} {subject} in one set"
     if kind == "running_volume":
         return f"{value:g} km a week"
     if kind == "consistency":
