@@ -14,6 +14,7 @@ from datetime import date
 
 import pytest
 
+from fitness_ledger.models import RecurringConstraint
 from fitness_ledger.planning import (
     MAX_SETS_PER_EXERCISE,
     MIN_SETS_PER_EXERCISE,
@@ -273,9 +274,64 @@ def test_a_run_after_leg_day_is_caught_only_when_disallowed():
         {"quadriceps": 6},
     ).sessions
 
-    assert validate(week) == []
-    [problem] = validate(week, preferences=Preferences(allow_run_after_leg_day=False))
+    [problem] = validate(week)
     assert "run" in problem and "leg session" in problem
+    assert validate(week, preferences=Preferences(allow_run_after_leg_day=True)) == []
+
+
+def test_run_after_legs_is_checked_by_default():
+    """#61: the default switched the check off while the running prompt still
+    described the rule, so the model reported breaking a rule nothing held."""
+    assert Preferences().allow_run_after_leg_day is False
+
+
+# --- standing weekly constraints (#70) ---------------------------------------
+
+
+def _run_on(day: date, focus: str = "easy") -> dict:
+    return {**run(day), "focus": focus}
+
+
+def test_a_run_on_a_no_high_impact_day_is_a_violation():
+    """The knee rule was saved and shown, and a Wednesday run was stored
+    beside it with no warning."""
+    knee = RecurringConstraint(weekday=WED.weekday(), kind="no_high_impact", reason="knee")
+    week = allocate([_run_on(WED)], {}).sessions
+
+    [problem] = validate(week, constraints=[knee])
+
+    assert str(WED) in problem and "Wednesday" in problem and "knee" in problem
+
+
+def test_a_lift_on_a_no_high_impact_day_is_allowed():
+    """A constraint narrows what a day holds; it does not remove the day."""
+    knee = RecurringConstraint(weekday=WED.weekday(), kind="no_high_impact")
+    week = allocate([lift(WED, ("bench", ["chest"]))], {"chest": 6}).sessions
+
+    assert validate(week, constraints=[knee]) == []
+
+
+def test_no_intervals_allows_an_easy_run_and_refuses_a_hard_one():
+    easy_only = RecurringConstraint(weekday=WED.weekday(), kind="no_intervals")
+
+    assert validate(allocate([_run_on(WED, "easy")], {}).sessions, constraints=[easy_only]) == []
+    for focus in ("intervals", "Tempo run", "hill repeats"):
+        week = allocate([_run_on(WED, focus)], {}).sessions
+        assert len(validate(week, constraints=[easy_only])) == 1, focus
+
+
+def test_a_lift_on_a_no_lifting_day_is_a_violation():
+    rest = RecurringConstraint(weekday=MON.weekday(), kind="no_lifting")
+    week = allocate([lift(MON, ("bench", ["chest"])), _run_on(MON)], {"chest": 6}).sessions
+
+    [problem] = validate(week, constraints=[rest])
+
+    assert "lifting" in problem and str(MON) in problem
+
+
+def test_a_constraint_on_another_weekday_changes_nothing():
+    knee = RecurringConstraint(weekday=FRI.weekday(), kind="no_high_impact")
+    assert validate(allocate([_run_on(WED)], {}).sessions, constraints=[knee]) == []
 
 
 def test_validation_reports_every_problem_not_just_the_first():

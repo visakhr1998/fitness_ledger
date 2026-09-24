@@ -375,6 +375,51 @@ def test_the_free_day_rule_disappears_without_a_running_target(bound):
     assert "Leave at least one" in with_target
 
 
+# --- standing constraints and the rules the prompts describe -----------------
+
+
+def test_a_standing_constraint_reaches_the_planners_as_a_date(bound):
+    """#70: saved, shown on the Goals screen, and absent from everything the
+    planners read. Rendered as this week's date, because turning a weekday
+    number into one is arithmetic."""
+    from fitness_ledger.coach.context import derive_summaries
+    from fitness_ledger.models import RecurringConstraint
+
+    repo, config = bound
+    repo.add_constraint(RecurringConstraint(weekday=2, kind="no_high_impact", reason="knee"))
+    week = next_monday(TODAY)
+
+    state = gather_context(repo, config, week)
+    summary = derive_summaries(state)["constraints_summary"]
+
+    assert state["constraints"][0]["kind"] == "no_high_impact"
+    assert (week + timedelta(days=2)).isoformat() in summary
+    assert "Wednesday" in summary and "knee" in summary
+
+
+def test_the_run_after_legs_line_says_what_the_config_holds(bound):
+    """#61: the prompt called it a preference, the config called it allowed,
+    and the model reported breaking a rule that did not exist."""
+    from fitness_ledger.coach.context import derive_summaries
+
+    repo, config = bound
+    assert "hard rule" in derive_summaries(gather_context(repo, config))["run_after_legs_rule"]
+
+    repo.set_setting("allow_run_after_leg_day", "true")
+    assert "allowed" in derive_summaries(gather_context(repo, config))["run_after_legs_rule"]
+
+
+def test_a_rejected_attempt_is_named_in_the_next_prompt(bound):
+    from fitness_ledger.coach.context import derive_summaries
+
+    repo, config = bound
+    state = gather_context(repo, config)
+    assert derive_summaries(state)["replan_note"] == ""
+
+    state["rejected_problems"] = ["chest is trained on 2026-09-11 and again on 2026-09-12"]
+    assert "chest is trained" in derive_summaries(state)["replan_note"]
+
+
 
 def test_the_ramp_is_measured_from_logged_weeks(bound):
     """The fixture trained a week ago and nothing before it in the window, so

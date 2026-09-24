@@ -225,6 +225,11 @@ Rules you must not break:
 
 4. Only use the training days listed above. The others are unavailable.
 
+4a. Standing weekly rules the person has set. A day marked "no lifting" gets no
+   lifting session; the other kinds restrict running and leave lifting alone.
+   The week is checked against these and rejected if it breaks one.
+{constraints_summary}
+
 5. {running_day_note}
 
 6. If a muscle is short in the "last complete week" table AND the continuity
@@ -253,7 +258,8 @@ not fix it, name it. An empty trade_offs means nothing was sacrificed, so use
 it only when that is true.
 
 Keep the rationale to two or three sentences, and cite the actual numbers you
-were given rather than describing them vaguely."""
+were given rather than describing them vaguely.
+{replan_note}"""
 
 
 RUNNING_INSTRUCTION = """You are a running coach placing this week's runs for a single person.
@@ -293,15 +299,20 @@ Rules you must not break:
 
 3. Only use the training days listed above.
 
-4. Prefer not to put a hard run the day after a heavy leg session, and prefer
-   not to stack a run on a day that already has a long lifting session. These
-   are preferences, not hard rules; if the week is tight, say so in trade_offs.
+3a. Standing weekly rules the person has set. "No running or jumping" means no
+   run that day at all; "easy running only" means a run there must be easy,
+   so do not label it intervals, tempo, hills or anything hard. The week is
+   checked against these and rejected if it breaks one.
+{constraints_summary}
 
-   If you place a run the day after a lifting day anyway, name it in
-   trade_offs: which run, which lifting day it follows, and why -- whether no
-   free day was left, or the free days that were left would have bunched the
-   runs worse. "Unavoidable" on a week that had a free day is the one thing
-   not to write, because it reads as a constraint and is a choice.
+4. {run_after_legs_rule} Prefer not to stack a run on a day that already has a
+   long lifting session; that one is a preference.
+
+   If you place a run the day after a lifting day, name it in trade_offs:
+   which run, which lifting day it follows, and why -- whether no free day was
+   left, or the free days that were left would have bunched the runs worse.
+   "Unavoidable" on a week that had a free day is the one thing not to write,
+   because it reads as a constraint and is a choice.
 
 5. You may direct training. You may not direct health. Reporting that sleep
    averaged five hours is fine. Telling someone to rest, skip a run, or train
@@ -312,7 +323,8 @@ Runs come third in the priority order -- after volume per muscle group and
 full-body coverage, before session count. If lifting has taken the days the runs
 needed, say that in trade_offs rather than displacing lifting.
 
-Keep the rationale to two or three sentences, citing the target you were given."""
+Keep the rationale to two or three sentences, citing the target you were given.
+{replan_note}"""
 
 
 def strength_days(state: dict[str, Any]) -> str:
@@ -388,6 +400,9 @@ def _running_instruction(context) -> str:  # noqa: ANN001 - ADK's ReadonlyContex
         strength_days=strength_days(state),
         running_deficit_summary=state.get("running_deficit_summary", ""),
         running_summary=running_summary(state),
+        constraints_summary=state.get("constraints_summary", "  (none)"),
+        run_after_legs_rule=state.get("run_after_legs_rule", ""),
+        replan_note=state.get("replan_note", ""),
     )
 
 
@@ -513,6 +528,7 @@ def build_coach(
     config: Config,
     week_start: date | None = None,
     model: Any = None,
+    rejected_problems: list[str] | None = None,
 ) -> Any:
     """The whole pipeline: read the picture, plan lifting, then place runs.
 
@@ -610,7 +626,7 @@ def build_coach(
     # LlmAgent asked to confirm what a query already answers spends a request
     # to save a request. `merge_proposals` already treats a missing running
     # half as empty, so nothing downstream changes.
-    steps = [build_context_reader(repo, config, week), strength]
+    steps = [build_context_reader(repo, config, week, rejected_problems), strength]
     if repo.get_running_target() is not None:
         steps.append(running)
 
@@ -678,47 +694,94 @@ async def _ask_until_usable(
     model: Any = None,
     on_fallback: BaseException | None = None,
 ) -> dict[str, Any]:
-    """Ask for a week until one comes back, up to `coach_max_plan_attempts`.
+    """Ask for a week until a usable one comes back, up to `coach_max_plan_attempts`.
 
-    The pipeline used to keep whatever the first call returned. Measured
-    2026-09-04 on `back_neglected`, the same prompt nine times to
-    deepseek-v4-flash-0731: about six answers were a usable week -- zero
-    invented ids, zero missing ids -- and three were an empty response with no
-    tool call and no text. So one week in three was being stored as a plan with
-    nothing in it, and it read as a model that cannot plan rather than one that
-    intermittently returns nothing.
+    Two kinds of unusable, both asked again on the same provider:
 
-    Retrying is the right shape *because* the failure is all-or-nothing and
-    cheap to detect. It is not a way to shop for a better plan: the test is
-    only whether a week came back, so a thin week is kept and a missing one is
-    asked again.
+    - **No week at all.** Measured 2026-09-04 on `back_neglected`, the same
+      prompt nine times to deepseek-v4-flash-0731: about six answers were a
+      usable week and three were an empty response with no tool call and no
+      text. The failure is all-or-nothing and cheap to detect.
+    - **A week that breaks a hard rule** (#56) -- a muscle trained on
+      consecutive days, a run the day after legs, a run on a day a standing
+      constraint rules out. `validate` found these and `assemble` stored the
+      week anyway, printing the violation beside a plan the user would act on.
+      This is decision 3 of "Locked Core, Fluid Margins": hard-rule violations
+      reject and re-plan. The next attempt is told what the last one broke,
+      because at temperature 0 the same prompt mostly returns the same week.
+
+    It is not a way to shop for a better plan. A thin week that breaks nothing
+    is kept; only a missing week or a broken rule is asked again.
+
+    Out of attempts, the attempt with the fewest violations is returned, with
+    every earlier rejection recorded under `rejected_attempts`. Returned rather
+    than raised so the caller still gets the ledger state and the record of how
+    hard we tried. An empty week is never preferred over a real one, and the
+    caller refuses to store one (#55).
 
     A week with no training days is left alone -- then an empty proposal is the
     correct answer and asking again would spend money to be told so twice.
     """
     attempts = max(config.coach_max_plan_attempts, 1)
     result: dict[str, Any] = {}
+    best: dict[str, Any] | None = None
+    rejected: list[list[str]] = []
+    feedback: list[str] = []
 
     for attempt in range(1, attempts + 1):
         result = await _run_coach(
-            repo, config, week_start, model=model, on_fallback=on_fallback
+            repo,
+            config,
+            week_start,
+            model=model,
+            on_fallback=on_fallback,
+            rejected_problems=feedback,
         )
         result["attempts"] = attempt
-        if _has_week(result) or not result.get("training_days"):
+        result["rejected_attempts"] = list(rejected)
+        if not result.get("training_days"):
+            return result
+        if not _has_week(result):
+            _log.warning(
+                "coach attempt %d/%d produced no week: %s",
+                attempt,
+                attempts,
+                result.get("diagnostics"),
+            )
+            continue
+
+        problems = hard_problems(repo, config, result)
+        result["problems"] = problems
+        if not problems:
             return result
         _log.warning(
-            "coach attempt %d/%d produced no week: %s",
+            "coach attempt %d/%d broke %d hard rule(s): %s",
             attempt,
             attempts,
-            result.get("diagnostics"),
+            len(problems),
+            "; ".join(problems),
         )
+        rejected.append(problems)
+        feedback = problems
+        if best is None or len(problems) < len(best["problems"]):
+            best = result
 
-    # Out of attempts. Returned rather than raised, so the caller still gets the
-    # week_start, the ledger state and `attempts` -- a raise would discard the
-    # record of how hard we tried, and an empty week is a result worth showing
-    # next to the reason, the same way `assemble` hands back its problems
-    # alongside the plan rather than instead of it.
+    if best is not None:
+        best["rejected_attempts"] = rejected
+        return best
     return result
+
+
+def hard_problems(repo: SQLiteRepository, config: Config, result: dict[str, Any]) -> list[str]:
+    """What `assemble` would report for this proposal, without storing it.
+
+    The same call the caller makes afterwards, not a second list of rules, so
+    the retry loop and the stored plan cannot disagree about what counts as a
+    violation.
+    """
+    from .assembler import assemble
+
+    return assemble(repo, config, result, persist=False)["problems"]
 
 
 def _record_wire(wire: dict[str, dict[str, Any]], event: Any) -> None:
@@ -800,6 +863,7 @@ async def _run_coach(
     week_start: date | None = None,
     model: Any = None,
     on_fallback: BaseException | None = None,
+    rejected_problems: list[str] | None = None,
 ) -> dict[str, Any]:
     """One pass of the pipeline.
 
@@ -809,7 +873,9 @@ async def _run_coach(
     from google.adk.runners import InMemoryRunner
     from google.genai import types
 
-    coach = build_coach(repo, config, week_start, model=model)
+    coach = build_coach(
+        repo, config, week_start, model=model, rejected_problems=rejected_problems
+    )
     runner = InMemoryRunner(agent=coach, app_name="fitness-ledger-coach")
 
     session = await runner.session_service.create_session(

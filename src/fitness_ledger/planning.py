@@ -20,10 +20,11 @@ stay testable without one.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from datetime import date
 
-from .models import PlannedExercise, PlannedSession
+from .models import PlannedExercise, PlannedSession, RecurringConstraint
 
 # An exercise is worth doing properly or not at all: one set of something is
 # almost never what was intended, and a plan full of singles reads as noise.
@@ -60,7 +61,14 @@ class Preferences:
     # back-to-back days are a violation; 0 disables the check.
     min_rest_days_same_muscle: int = 1
     # Whether a run may sit on the day after a session that trained legs.
-    allow_run_after_leg_day: bool = True
+    #
+    # False since #61. It defaulted to True, which switched the check off --
+    # while the running planner's prompt described the rule anyway, so the model
+    # wrote "a preference violation but unavoidable" about a week the config
+    # allowed and that had a clean arrangement available. Off by default was
+    # also the only safe setting while a violation was stored rather than
+    # re-planned; `_ask_until_usable` now re-asks (#56), so the rule can be on.
+    allow_run_after_leg_day: bool = False
 
 
 LEG_MUSCLES = frozenset({"quadriceps", "hamstrings", "glutes", "calves"})
@@ -462,6 +470,7 @@ def validate(
     pool_ids: set[str] | None = None,
     training_days: set[str] | None = None,
     preferences: Preferences | None = None,
+    constraints: list[RecurringConstraint] | tuple[RecurringConstraint, ...] = (),
 ) -> list[str]:
     """Hard constraints. Returns one readable line per violation, empty if clean.
 
@@ -496,6 +505,57 @@ def validate(
 
     problems += _rest_violations(sessions, prefs)
     problems += _run_adjacency_violations(sessions, prefs)
+    problems += _standing_violations(sessions, constraints)
+    return problems
+
+
+# A run focus that is not easy running. The planner labels a run with free text
+# ("easy", "long", "intervals"), and there is no structured intensity yet, so
+# `no_intervals` is checked against the label: a day that allows easy running
+# only must not carry a session named as a hard one. Matched as word stems so
+# "Tempo run" and "hill repeats" are caught along with the bare words.
+HARD_RUN_WORDS = re.compile(
+    r"\b(interval|tempo|threshold|hill|repeat|speed|fartlek|track|vo2|race|hard)",
+    re.IGNORECASE,
+)
+
+
+def _standing_violations(
+    sessions: tuple[PlannedSession, ...],
+    constraints: list[RecurringConstraint] | tuple[RecurringConstraint, ...],
+) -> list[str]:
+    """A session on a weekday the user has ruled it out for (#70).
+
+    The constraint was saved, shown on the Goals screen and ignored: nothing
+    handed it to the planners and nothing here checked it, so a knee rule for
+    Wednesdays stood beside a plan with a Wednesday run. The prompt now carries
+    the rule too, but a prompt can be ignored and this cannot.
+    """
+    problems = []
+    for session in sessions:
+        for rule in constraints:
+            if session.local_date.weekday() != rule.weekday:
+                continue
+            said = f" ({rule.reason})" if rule.reason else ""
+            if session.kind == "run" and rule.kind == "no_high_impact":
+                problems.append(
+                    f"a run is planned for {session.local_date}, a {rule.weekday_name}, "
+                    f"where running is ruled out{said}"
+                )
+            elif (
+                session.kind == "run"
+                and rule.kind == "no_intervals"
+                and HARD_RUN_WORDS.search(session.focus or "")
+            ):
+                problems.append(
+                    f"a {session.focus!r} run is planned for {session.local_date}, a "
+                    f"{rule.weekday_name}, where only easy running is allowed{said}"
+                )
+            elif session.kind == "lift" and rule.kind == "no_lifting" and session.exercises:
+                problems.append(
+                    f"lifting is planned for {session.local_date}, a {rule.weekday_name}, "
+                    f"where lifting is ruled out{said}"
+                )
     return problems
 
 

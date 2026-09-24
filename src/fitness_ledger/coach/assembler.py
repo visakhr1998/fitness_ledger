@@ -72,6 +72,9 @@ def assemble(
     validation problems and the shortfall the week could not close -- the
     caller decides what to do about them, because a plan that breaks a
     constraint is still worth showing next to the reason.
+
+    An empty week is never stored, whatever `persist` says; `stored` reports
+    whether this call wrote a row.
     """
     proposal = result.get("proposal") or {}
     week_start = date.fromisoformat(result["week_start"])
@@ -98,9 +101,11 @@ def assemble(
         pool_ids=known,
         training_days=set(result.get("training_days") or []) or None,
         preferences=prefs,
+        constraints=repo.get_constraints(),
     )
     problems += unplannable(proposal.get("sessions") or [], allocation.sessions, known)
-    problems += empty_week(allocation.sessions, result.get("training_days") or [])
+    empty = empty_week(allocation.sessions, result.get("training_days") or [])
+    problems += empty
 
     kept = continuity(result.get("last_week_exercises") or {}, allocation.sessions)
 
@@ -113,11 +118,20 @@ def assemble(
         ),
         agent_trace=tuple(result.get("agent_trace") or ()),
     )
-    if persist:
+    # A week with no training in it is a failure to plan, and storing it put an
+    # empty plan on the Week tab next to the explanation (#55) -- on the real
+    # ledger, about one generation in three. `empty_week` already names the case
+    # exactly, so it is reported and not written. Other violations are still
+    # stored beside the plan: by the time a week reaches here the retry loop
+    # has already re-planned it, and a week with one stated problem is worth
+    # more than no week.
+    stored = persist and not empty
+    if stored:
         plan = repo.add_plan(plan)
 
     return {
         "plan": plan,
+        "stored": stored,
         "problems": problems,
         "unmet": allocation.unmet,
         "unplaced": list(allocation.unplaced),

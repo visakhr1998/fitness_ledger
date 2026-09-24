@@ -296,6 +296,21 @@ def test_problems_are_recomputed_not_stored(repo):
     assert any("over the 2 allowed in a session" in p for p in problems)
 
 
+def test_the_week_view_flags_a_standing_constraint_the_plan_breaks(repo):
+    """#70: no "Constraints not met" card appeared beside a Wednesday run on a
+    Wednesday-knee week, because the view never passed the rules to validate."""
+    from fitness_ledger.config import Config
+    from fitness_ledger.models import RecurringConstraint
+    from fitness_ledger.sections import plan_section
+
+    repo.add_plan(a_plan())
+    repo.add_constraint(RecurringConstraint(weekday=WEEK.weekday(), kind="no_lifting"))
+
+    problems = plan_section(repo, Config.load())["problems"]
+
+    assert any("lifting is ruled out" in p for p in problems), problems
+
+
 def test_a_week_with_no_plan_of_its_own_is_not_silently_another_weeks(repo):
     from fitness_ledger.config import Config
     from fitness_ledger.sections import plan_section
@@ -380,6 +395,33 @@ def test_an_unknown_exercise_is_left_as_it_came():
     )
 
     assert filled[0]["exercises"][0]["targets"] == []
+
+
+def test_an_empty_week_is_reported_and_never_stored(repo):
+    """#55: about one generation in three on the real ledger stored a plan with
+    nothing in it, shown on the Week tab next to the explanation."""
+    from fitness_ledger.config import Config
+
+    result = a_result()
+    result["proposal"]["sessions"] = []
+
+    out = assembler.assemble(repo, Config.load(), result, persist=True)
+
+    assert out["stored"] is False
+    assert any("no training at all" in problem for problem in out["problems"])
+    assert repo.latest_plan() is None
+
+
+def test_a_standing_constraint_reaches_validation(repo):
+    """#70: the rule was saved and nothing checked a plan against it."""
+    from fitness_ledger.config import Config
+    from fitness_ledger.models import RecurringConstraint
+
+    repo.add_constraint(RecurringConstraint(weekday=WEEK.weekday(), kind="no_lifting"))
+
+    problems = assembler.assemble(repo, Config.load(), a_result(), persist=False)["problems"]
+
+    assert any("lifting is ruled out" in problem for problem in problems), problems
 
 
 

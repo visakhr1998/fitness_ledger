@@ -158,6 +158,15 @@ def build_tools(repo: SQLiteRepository, config: Config) -> list[Callable[..., An
             "running_target": target.as_dict() if target else None,
         }
 
+    def get_constraints() -> list[dict[str, Any]]:
+        """Standing weekly restrictions: a weekday and what it rules out.
+
+        Unlike availability these hold every week. A constraint narrows what a
+        day can carry rather than removing the day -- "no running on
+        Wednesdays" still allows a lift there.
+        """
+        return [constraint.as_dict() for constraint in repo.get_constraints()]
+
     def get_availability(week_start: str = "") -> dict[str, Any]:
         """Days in a week the user cannot train.
 
@@ -242,6 +251,7 @@ def build_tools(repo: SQLiteRepository, config: Config) -> list[Callable[..., An
         get_recovery_signals,
         get_insights,
         get_goals,
+        get_constraints,
         get_availability,
         get_previous_plan,
     ]
