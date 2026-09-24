@@ -379,3 +379,17 @@ def test_the_calendar_is_a_lookup_starting_today():
     assert lines[0].strip() == "Saturday 2026-08-29 (today)"
     assert lines[6].strip() == "Friday 2026-09-04"
     assert len(lines) == intake.CALENDAR_DAYS
+
+
+def test_a_rep_target_becomes_a_reps_goal_not_unclear(monkeypatch):
+    """#59: the model named the gap itself -- "a target number of reps for
+    pull-ups, which does not map to a goal type"."""
+    result, _ = run(
+        monkeypatch,
+        proposal_turn(goals=[{"type": "reps", "subject": "pull-ups", "target_value": 10}]),
+        "I need to improve my pull-ups from 5 to 10 by end of year.",
+    )
+
+    [goal] = result["goals"]
+    assert goal["type"] == "reps"
+    assert intake.describe_goal(goal) == "10 pull-ups in one set"

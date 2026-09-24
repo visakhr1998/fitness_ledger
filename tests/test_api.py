@@ -359,6 +359,20 @@ def test_a_race_goal_reports_that_it_cannot_be_measured_yet(client):
     assert progress["fraction"] is None
 
 
+def test_a_rep_goal_is_measured_from_the_best_logged_set(client):
+    """#59: a rep target now has somewhere to go, and a number to show."""
+    created = client.post(
+        "/api/goals", json={"type": "reps", "subject": "Barbell Row", "target_value": 12}
+    ).json()
+
+    progress = client.get(f"/api/goals/{created['id']}/progress").json()
+
+    assert progress["current"] == 10
+    assert progress["unit"] == "reps"
+    assert progress["fraction"] == round(10 / 12, 3)
+    assert "at 60 kg" in progress["detail"]
+
+
 def test_the_composed_question_carries_the_numbers(client):
     """The model explains a figure it was given rather than deriving one."""
     created = client.post("/api/goals", json={"type": "consistency", "target_value": 4}).json()

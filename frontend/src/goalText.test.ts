@@ -59,6 +59,12 @@ describe("describeGoal", () => {
     ).toBe("Bench Press one-rep max of 100 kg");
   });
 
+  it("reads a rep goal as a number of reps in one set", () => {
+    expect(describeGoal({ type: "reps", subject: "Pull Up", target_value: 10 })).toBe(
+      "10 Pull Up in one set",
+    );
+  });
+
   it("falls back rather than rendering blank for a type it does not know", () => {
     // A goal type added on the server must not silently disappear from the UI.
     expect(
@@ -102,6 +108,7 @@ describe("goalSection", () => {
     expect(goalSection("running_volume")).toBe("run");
     expect(goalSection("running_aei")).toBe("run");
     expect(goalSection("strength_1rm")).toBe("gym");
+    expect(goalSection("reps")).toBe("gym");
   });
 
   it("puts consistency on both, because it is about the week not a discipline", () => {

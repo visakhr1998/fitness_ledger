@@ -19,6 +19,7 @@ from .models import WORKING_SET_TYPES, Goal, Plan, VolumeTarget
 from .planning import Adherence, Preferences, Ramp, adherence, ramp
 from .progression import RepRange, main_lifts, progression_state, stalled
 from .volume import (
+    best_reps_per_session,
     best_set_per_session,
     compute_volume,
     coverage,
@@ -643,6 +644,34 @@ def goal_progress(repo: SQLiteRepository, config: Config, goal: Goal) -> dict[st
                 f"{report['change_kg']:+g} kg over the window"
                 if sessions
                 else "nothing logged for this lift in the last 12 weeks"
+            ),
+        }
+
+    if goal.type == "reps" and goal.subject:
+        matches = find_exercise(repo, goal.subject, limit=1)
+        if not matches:
+            return {
+                **measured,
+                "measurable": False,
+                "detail": f"No exercise matching {goal.subject!r} found in the catalog.",
+            }
+        template = matches[0]
+        end = date.today() + timedelta(days=1)
+        start = end - timedelta(weeks=12)
+        sessions = best_reps_per_session(repo.get_sets(start, end), template["id"])
+        latest = sessions[-1] if sessions else None
+        load = f" at {latest['weight_kg']:g} kg" if latest and latest["weight_kg"] else ""
+        return {
+            **measured,
+            "subject": template["title"],
+            "current": latest["reps"] if latest else None,
+            "fraction": _fraction(latest["reps"] if latest else None, goal.target_value),
+            "unit": "reps",
+            "window": describe_window(start, end),
+            "detail": (
+                f"best set in the latest of {len(sessions)} sessions{load}"
+                if latest
+                else "nothing logged for this exercise in the last 12 weeks"
             ),
         }
 

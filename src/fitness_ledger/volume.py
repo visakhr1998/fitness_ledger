@@ -248,3 +248,32 @@ def best_set_per_session(
                 "e1rm": round(e1rm, 1),
             }
     return [by_day[day] for day in sorted(by_day)]
+
+
+def best_reps_per_session(
+    sets: list[SetEntry], exercise_template_id: str
+) -> list[dict[str, object]]:
+    """Most reps in one working set per day for one exercise, oldest first.
+
+    For a `reps` goal. Load is recorded but not required: a pull-up logged with
+    no weight is the case this exists for, and `best_set_per_session` skips it
+    because an estimated 1RM needs a weight. When sets tie on reps, the heavier
+    one is kept, so the row says what the best set actually was.
+    """
+    by_day: dict[date, dict[str, object]] = {}
+    for entry in sets:
+        if entry.exercise_template_id != exercise_template_id:
+            continue
+        if entry.set_type not in WORKING_SET_TYPES or not entry.reps:
+            continue
+        current = by_day.get(entry.local_date)
+        heavier = (entry.weight_kg or 0) > (current["weight_kg"] or 0) if current else False
+        if current is None or entry.reps > current["reps"] or (
+            entry.reps == current["reps"] and heavier
+        ):
+            by_day[entry.local_date] = {
+                "date": entry.local_date,
+                "weight_kg": entry.weight_kg,
+                "reps": entry.reps,
+            }
+    return [by_day[day] for day in sorted(by_day)]

@@ -40,6 +40,8 @@ export function describeGoal(goal: {
       return `${(goal.subject ?? "").replace(/_/g, " ")} in ${clock(goal.target_value)}`;
     case "strength_1rm":
       return `${goal.subject} one-rep max of ${goal.target_value} kg`;
+    case "reps":
+      return `${goal.target_value} ${goal.subject} in one set`;
     case "running_volume":
       return `${goal.target_value} km a week`;
     case "consistency":
@@ -88,6 +90,7 @@ export function goalSection(type: string): "run" | "gym" | "both" {
     case "running_aei":
       return "run";
     case "strength_1rm":
+    case "reps":
       return "gym";
     default:
       return "both";

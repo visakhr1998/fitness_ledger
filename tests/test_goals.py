@@ -289,3 +289,37 @@ def test_re_adding_a_constraint_returns_that_constraint_s_id(repo):
     assert again.id == first.id
     assert [c.id for c in repo.get_constraints()] == [first.id]
     assert repo.delete_constraint(again.id) is True
+
+
+# --- rep goals (#59) -----------------------------------------------------------
+
+
+def test_a_rep_goal_needs_an_exercise_and_a_positive_count():
+    """"From 5 pull-ups to 10" had nowhere to go: strength_1rm expects kilograms
+    and would have produced a meaningless target."""
+    Goal(type="reps", subject="Pull Up", target_value=10)
+    with pytest.raises(ValueError, match="subject"):
+        Goal(type="reps", target_value=10)
+    with pytest.raises(ValueError, match="at least one rep"):
+        Goal(type="reps", subject="Pull Up", target_value=0)
+
+
+def test_best_reps_counts_bodyweight_sets_that_the_1rm_series_skips():
+    from fitness_ledger.models import SetEntry
+    from fitness_ledger.volume import best_reps_per_session, best_set_per_session
+
+    day1, day2 = date(2026, 9, 1), date(2026, 9, 3)
+    sets = [
+        SetEntry("w1", day1, "PU", "Pull Up", "warmup", None, 12),  # warmups never count
+        SetEntry("w1", day1, "PU", "Pull Up", "normal", None, 5),
+        SetEntry("w1", day1, "PU", "Pull Up", "normal", None, 6),
+        SetEntry("w2", day2, "PU", "Pull Up", "normal", None, 7),
+        SetEntry("w2", day2, "PU", "Pull Up", "normal", 5.0, 7),  # tie: heavier kept
+        SetEntry("w2", day2, "XX", "Other", "normal", None, 30),
+    ]
+
+    assert [row["date"] for row in best_set_per_session(sets, "PU")] == [day2]
+    assert best_reps_per_session(sets, "PU") == [
+        {"date": day1, "weight_kg": None, "reps": 6},
+        {"date": day2, "weight_kg": 5.0, "reps": 7},
+    ]
