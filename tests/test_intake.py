@@ -240,7 +240,8 @@ def test_nothing_extracted_still_returns_the_full_envelope(monkeypatch):
     # The UI must never branch on which keys exist.
     result, _ = run(monkeypatch, proposal_turn(goals=[]), "I like training")
     assert set(result) == {
-        "goals", "constraints", "unclear", "rejected", "safety", "message",
+        "goals", "constraints", "running_target", "unavailable",
+        "unclear", "rejected", "safety", "message",
     }
 
 
@@ -304,6 +305,80 @@ def test_the_prompt_forbids_the_model_from_proposing_volumes():
     prompt = intake.build_system_prompt("2026-08-29")
     assert "Never propose training volumes" in prompt
     assert "You extract intent, not programming" in prompt
+
+
+# --- the running target and one-off days (#57, #58) -------------------------
+
+
+def test_a_weekly_running_routine_becomes_a_running_target_not_goals(monkeypatch):
+    """#57: the sentence came back as a running_volume goal and a consistency
+    goal, which read as saved while the planner and the running insight saw no
+    target at all."""
+    result, _ = run(
+        monkeypatch,
+        proposal_turn(
+            goals=[],
+            running_target={"distance_km_per_week": 25, "sessions_per_week": 3},
+        ),
+        "I want to run 25km across 3 sessions per week.",
+    )
+
+    assert result["running_target"] == {"distance_km_per_week": 25.0, "sessions_per_week": 3}
+    assert result["goals"] == []
+
+
+def test_a_running_target_missing_a_number_is_refused_not_defaulted(monkeypatch):
+    """RunningTarget defaults to two runs; filling that in would plan runs
+    nobody asked for."""
+    result, _ = run(
+        monkeypatch,
+        proposal_turn(goals=[], running_target={"distance_km_per_week": 25}),
+        "I want to run 25km a week.",
+    )
+
+    assert result["running_target"] is None
+    assert any("number of runs" in problem for problem in result["rejected"])
+
+
+def test_the_prompt_routes_a_routine_away_from_goals():
+    prompt = intake.build_system_prompt("2026-08-29")
+    assert "running_target" in prompt and "never as a running_volume goal" in prompt
+
+
+def test_a_stated_day_off_becomes_an_unavailable_date(monkeypatch):
+    """#58: "I can't train this Friday." produced no record of any kind."""
+    result, _ = run(
+        monkeypatch,
+        proposal_turn(goals=[], unavailable_dates=[{"date": "2026-09-04", "reason": "work"}]),
+        "I can't train this Friday.",
+    )
+
+    assert result["unavailable"] == [{"date": "2026-09-04", "reason": "work"}]
+    assert result["constraints"] == []
+
+
+@pytest.mark.parametrize("day", ["2026-08-28", "2026-09-12", "next friday"])
+def test_a_day_off_outside_the_calendar_is_refused(monkeypatch, day):
+    """Only dates the prompt listed are accepted: anything else was worked out
+    by the model, and a wrong day off silently removes a training day."""
+    result, _ = run(
+        monkeypatch,
+        proposal_turn(goals=[], unavailable_dates=[{"date": day}]),
+        "I can't train then.",
+    )
+
+    assert result["unavailable"] == []
+    assert len(result["rejected"]) == 1
+
+
+def test_the_calendar_is_a_lookup_starting_today():
+    """"This Friday" -> a date is arithmetic, so the prompt hands over the
+    answer rather than asking for it."""
+    lines = intake.calendar("2026-08-29").splitlines()
+
+    assert lines[0].strip() == "Saturday 2026-08-29 (today)"
+    assert lines[6].strip() == "Friday 2026-09-04"
+    assert len(lines) == intake.CALENDAR_DAYS
 
 
 def test_a_rep_target_becomes_a_reps_goal_not_unclear(monkeypatch):

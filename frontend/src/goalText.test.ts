@@ -10,6 +10,7 @@ import { describe, expect, it } from "vitest";
 import {
   clock,
   describeConstraint,
+  describeDayOff,
   describeGoal,
   describeProgress,
   goalSection,
@@ -91,6 +92,13 @@ describe("describeConstraint", () => {
     expect(describeConstraint({ weekday: 6, kind: "no_intervals", reason: null })).toBe(
       "Sundays: easy running only",
     );
+  });
+});
+
+describe("describeDayOff", () => {
+  it("names the weekday of a local date, not the UTC one", () => {
+    expect(describeDayOff("2026-09-04")).toBe("Friday 2026-09-04");
+    expect(describeDayOff("2026-09-06")).toBe("Sunday 2026-09-06");
   });
 });
 

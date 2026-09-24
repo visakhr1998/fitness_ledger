@@ -29,6 +29,7 @@ import { useElapsedSeconds } from "../hooks";
 import { Card } from "../charts/primitives";
 import {
   describeConstraint,
+  describeDayOff,
   describeGoal,
   describeProgress,
   percentOf,
@@ -101,6 +102,15 @@ function Intake({ onSaved }: { onSaved: () => void }) {
       for (const c of proposal.constraints) {
         await api.addConstraint({ weekday: c.weekday, kind: c.kind, reason: c.reason });
       }
+      if (proposal.running_target) {
+        await api.setRunningTarget(
+          proposal.running_target.distance_km_per_week,
+          proposal.running_target.sessions_per_week,
+        );
+      }
+      for (const day of proposal.unavailable) {
+        await api.markUnavailable(day.date, day.reason ?? undefined);
+      }
       setProposal(null);
       setText("");
       onSaved();
@@ -111,7 +121,12 @@ function Intake({ onSaved }: { onSaved: () => void }) {
     }
   };
 
-  const found = proposal ? proposal.goals.length + proposal.constraints.length : 0;
+  const found = proposal
+    ? proposal.goals.length +
+      proposal.constraints.length +
+      (proposal.running_target ? 1 : 0) +
+      proposal.unavailable.length
+    : 0;
 
   return (
     <Card
@@ -232,6 +247,33 @@ function Intake({ onSaved }: { onSaved: () => void }) {
               <ul style={{ margin: "0 0 14px", paddingLeft: 18, fontSize: 14 }}>
                 {proposal.constraints.map((c, index) => (
                   <li key={index} style={{ marginBottom: 4 }}>{describeConstraint(c)}</li>
+                ))}
+              </ul>
+            </>
+          )}
+
+          {proposal.running_target && (
+            <>
+              <h3 style={{ fontSize: 13, fontWeight: 600, margin: "0 0 8px" }}>Running target found</h3>
+              <ul style={{ margin: "0 0 14px", paddingLeft: 18, fontSize: 14 }}>
+                <li>
+                  {proposal.running_target.distance_km_per_week} km a week across{" "}
+                  {proposal.running_target.sessions_per_week} runs
+                  <span style={{ color: "var(--text-muted)" }}> — replaces any target already set</span>
+                </li>
+              </ul>
+            </>
+          )}
+
+          {proposal.unavailable.length > 0 && (
+            <>
+              <h3 style={{ fontSize: 13, fontWeight: 600, margin: "0 0 8px" }}>Days off found</h3>
+              <ul style={{ margin: "0 0 14px", paddingLeft: 18, fontSize: 14 }}>
+                {proposal.unavailable.map((day) => (
+                  <li key={day.date} style={{ marginBottom: 4 }}>
+                    {describeDayOff(day.date)}
+                    {day.reason && <span style={{ color: "var(--text-muted)" }}> ({day.reason})</span>}
+                  </li>
                 ))}
               </ul>
             </>
