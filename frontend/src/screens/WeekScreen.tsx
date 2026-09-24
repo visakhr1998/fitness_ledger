@@ -16,6 +16,7 @@ import {
   api,
   readable,
   type AvailabilitySection,
+  type PlanningLimits,
   type PlanSection,
   type PlanStatus,
   type RoutineProposal,
@@ -92,10 +93,11 @@ function SubHeading({ children }: { children: ReactNode }) {
  * week, not before.
  */
 function WhyThisWeek({
-  plan, rules,
+  plan, rules, onLimitsSaved,
 }: {
   plan: NonNullable<PlanSection["plan"]>;
   rules: PlanSection["rules"];
+  onLimitsSaved: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const trace = plan.agent_trace ?? [];
@@ -164,6 +166,7 @@ function WhyThisWeek({
               </li>
             </ul>
           )}
+          <LimitsEditor onSaved={onLimitsSaved} />
 
           {rules && (
             <>
@@ -181,6 +184,216 @@ function WhyThisWeek({
         </div>
       )}
     </Card>
+  );
+}
+
+// --- planning limits -------------------------------------------------------
+
+// The API's own bounds (`PlanningLimitsUpdate` in api.py), checked here first so
+// a bad entry is named rather than arriving as a 422 with no readable detail.
+const LIMIT_FIELDS: {
+  key: Exclude<keyof PlanningLimits, "allow_run_after_leg_day">;
+  label: string;
+  hint?: string;
+  min: number;
+  max: number;
+}[] = [
+  { key: "min_sets_per_exercise", label: "Fewest sets per exercise", min: 1, max: 10 },
+  { key: "max_sets_per_exercise", label: "Most sets per exercise", min: 1, max: 10 },
+  { key: "max_sets_per_session", label: "Most sets in a session", min: 1, max: 60 },
+  {
+    key: "min_rest_days_same_muscle", label: "Rest days before training a muscle again",
+    hint: "0 turns the check off", min: 0, max: 6,
+  },
+];
+
+type LimitsDraft = Record<(typeof LIMIT_FIELDS)[number]["key"], string> & {
+  allow_run_after_leg_day: boolean;
+};
+
+function toDraft(limits: PlanningLimits): LimitsDraft {
+  return {
+    min_sets_per_exercise: String(limits.min_sets_per_exercise),
+    max_sets_per_exercise: String(limits.max_sets_per_exercise),
+    max_sets_per_session: String(limits.max_sets_per_session),
+    min_rest_days_same_muscle: String(limits.min_rest_days_same_muscle),
+    allow_run_after_leg_day: limits.allow_run_after_leg_day,
+  };
+}
+
+function sameLimits(a: PlanningLimits, b: PlanningLimits): boolean {
+  return (Object.keys(a) as (keyof PlanningLimits)[]).every((key) => a[key] === b[key]);
+}
+
+/** Edit the hard limits every plan is checked against.
+ *
+ *  They lived in `user_settings` with no screen or command, so the only way to
+ *  change one was editing SQLite. Fetches its own values rather than reading
+ *  `rules.limits`, so it also works before the first plan exists. Saving does
+ *  not re-plan a stored week; it changes what the next one is planned against
+ *  and what "Constraints not met" checks. */
+function LimitsEditor({ onSaved }: { onSaved: () => void }) {
+  const [open, setOpen] = useState(false);
+  const [stored, setStored] = useState<{ limits: PlanningLimits; defaults: PlanningLimits } | null>(null);
+  const [draft, setDraft] = useState<LimitsDraft | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [saved, setSaved] = useState(false);
+
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    api.planningLimits()
+      .then((body) => {
+        if (cancelled) return;
+        setStored(body);
+        setDraft(toDraft(body.limits));
+      })
+      .catch((exc) => !cancelled && setError(readable(exc)));
+    return () => { cancelled = true; };
+  }, [open]);
+
+  const parsed: PlanningLimits | null = draft && {
+    min_sets_per_exercise: Number(draft.min_sets_per_exercise),
+    max_sets_per_exercise: Number(draft.max_sets_per_exercise),
+    max_sets_per_session: Number(draft.max_sets_per_session),
+    min_rest_days_same_muscle: Number(draft.min_rest_days_same_muscle),
+    allow_run_after_leg_day: draft.allow_run_after_leg_day,
+  };
+
+  const problems: string[] = [];
+  if (draft && parsed) {
+    for (const field of LIMIT_FIELDS) {
+      const value = parsed[field.key];
+      if (draft[field.key].trim() === "" || !Number.isInteger(value) || value < field.min || value > field.max) {
+        problems.push(`${field.label} must be a whole number ${field.min}–${field.max}`);
+      }
+    }
+    if (problems.length === 0) {
+      if (parsed.min_sets_per_exercise > parsed.max_sets_per_exercise) {
+        problems.push("Fewest sets per exercise cannot be more than the most");
+      }
+      if (parsed.max_sets_per_exercise > parsed.max_sets_per_session) {
+        problems.push("Most sets per exercise cannot be more than the most in a session");
+      }
+    }
+  }
+
+  const changed = Boolean(stored && parsed && !sameLimits(parsed, stored.limits));
+  const atDefaults = Boolean(stored && parsed && sameLimits(parsed, stored.defaults));
+
+  const save = async () => {
+    if (!parsed) return;
+    setBusy(true);
+    setError(null);
+    setSaved(false);
+    try {
+      const body = await api.setPlanningLimits(parsed);
+      setStored(body);
+      setDraft(toDraft(body.limits));
+      setSaved(true);
+      onSaved();
+    } catch (exc) {
+      setError(readable(exc));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const blocked = busy || !changed || problems.length > 0;
+  const inputStyle = {
+    width: 56, background: "var(--surface-raised)", color: "var(--text-primary)",
+    border: "1px solid var(--border)", borderRadius: 8, padding: "5px 8px", fontSize: 13,
+  } as const;
+
+  return (
+    <div style={{ marginTop: 12 }}>
+      <button
+        onClick={() => setOpen((value) => !value)}
+        aria-expanded={open}
+        style={{ fontSize: 13, color: "var(--accent)", background: "transparent", padding: 0 }}
+      >
+        {open ? "Hide limits" : "Edit limits"}
+      </button>
+
+      {open && (
+        <div style={{ marginTop: 10 }}>
+          <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 10 }}>
+            The next plan is built within these, and the week shown here is checked
+            against them. Changing them does not re-plan a week already stored.
+          </div>
+          {!draft && !error && <Loading />}
+          {draft && stored && (
+            <div style={{ display: "grid", gap: 8, maxWidth: 520 }}>
+              {LIMIT_FIELDS.map((field) => (
+                <label key={field.key} style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 13 }}>
+                  <span style={{ flex: "1 1 auto", color: "var(--text-secondary)" }}>
+                    {field.label}
+                    <span style={{ display: "block", fontSize: 11, color: "var(--text-muted)" }}>
+                      default {stored.defaults[field.key]}{field.hint ? ` · ${field.hint}` : ""}
+                    </span>
+                  </span>
+                  <input
+                    type="number" min={field.min} max={field.max} step={1} inputMode="numeric"
+                    value={draft[field.key]}
+                    aria-label={field.label}
+                    onChange={(event) => {
+                      const value = event.target.value;
+                      setDraft((d) => d && { ...d, [field.key]: value });
+                    }}
+                    style={inputStyle}
+                  />
+                </label>
+              ))}
+              <label style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 13 }}>
+                <input
+                  type="checkbox"
+                  checked={draft.allow_run_after_leg_day}
+                  onChange={(event) => {
+                    const checked = event.target.checked;
+                    setDraft((d) => d && { ...d, allow_run_after_leg_day: checked });
+                  }}
+                />
+                <span style={{ color: "var(--text-secondary)" }}>
+                  Allow a run the day after a leg session
+                  <span style={{ display: "block", fontSize: 11, color: "var(--text-muted)" }}>
+                    default {stored.defaults.allow_run_after_leg_day ? "allowed" : "not allowed"}
+                  </span>
+                </span>
+              </label>
+            </div>
+          )}
+
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 12, alignItems: "center", marginTop: 12 }}>
+            <button
+              onClick={save}
+              disabled={blocked}
+              style={{
+                padding: "7px 16px", borderRadius: "var(--radius-control)",
+                background: "var(--accent)", color: "var(--bg)", fontSize: 13, fontWeight: 600,
+                opacity: blocked ? 0.5 : 1, cursor: blocked ? "default" : "pointer",
+              }}
+            >
+              {busy ? "Saving…" : changed ? "Save limits" : "No changes"}
+            </button>
+            {stored && !atDefaults && (
+              <button
+                onClick={() => setDraft(toDraft(stored.defaults))}
+                disabled={busy}
+                style={{ fontSize: 12, color: "var(--text-secondary)", background: "transparent", padding: 0 }}
+              >
+                Use defaults
+              </button>
+            )}
+            {problems.map((problem) => (
+              <span key={problem} role="alert" style={{ fontSize: 12, color: "var(--critical)" }}>{problem}</span>
+            ))}
+            {saved && !changed && <span style={{ fontSize: 12, color: "var(--text-muted)" }}>Saved.</span>}
+            {error && <span role="alert" style={{ fontSize: 12, color: "var(--critical)" }}>{error}</span>}
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -320,6 +533,7 @@ export function WeekScreen({ reloadKey }: { reloadKey: number }) {
           {data.reason ?? "Nothing has been planned."}
         </p>
         <GenerateControl onDone={reload} label="Plan next week" />
+        <LimitsEditor onSaved={reload} />
       </Card>
     );
   }
@@ -570,7 +784,7 @@ export function WeekScreen({ reloadKey }: { reloadKey: number }) {
         )}
       </Card>
 
-      <WhyThisWeek plan={plan} rules={data.rules} />
+      <WhyThisWeek plan={plan} rules={data.rules} onLimitsSaved={reload} />
 
       {problems.length > 0 && (
         /* Shown beside the plan rather than instead of it: a week that breaks a

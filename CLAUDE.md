@@ -202,7 +202,7 @@ Two rules, both learned the hard way:
 ## Working here
 
 ```bash
-./.venv/Scripts/python.exe -m pytest              # 660 pass, 52 skip (coach evals); 712 collected
+./.venv/Scripts/python.exe -m pytest              # 677 pass, 52 skip (coach evals); 729 collected
 cd frontend && npm test                           # 30 tests
 cd frontend && npm run build                      # required after any frontend change
 ./.venv/Scripts/python.exe -m fitness_ledger.cli doctor
