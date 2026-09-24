@@ -27,7 +27,7 @@ from typing import Any
 from ..config import Config
 from ..db import SQLiteRepository
 from ..models import WEEKDAY_NAMES
-from ..queries import planning_preferences
+from ..queries import planning_preferences, training_ramp
 from .tools import build_tools
 
 # One complete week is what a one-week plan is measured against: over
@@ -55,6 +55,7 @@ STATE_KEYS = (
     "preferences",
     "exercise_pool",
     "previous_plan",
+    "last_week_exercises",
 )
 
 
@@ -99,6 +100,10 @@ def gather_context(
             "runs_last_week": tools["get_recent_runs"](PLANNING_WINDOW),
             "recovery": tools["get_recovery_signals"](RECOVERY_WINDOW),
             "insights": tools["get_insights"](),
+            # Whether this week follows a break from lifting (#62). Carried in
+            # ledger_state so the assembler scales the same targets the planner
+            # was told were scaled.
+            "ramp": training_ramp(repo, config).as_dict(),
         },
         "availability": tools["get_availability"](week.isoformat()),
         # Standing weekly rules. Saved and shown on the Goals screen for weeks
@@ -113,6 +118,25 @@ def gather_context(
         },
         "exercise_pool": covering_pool(tools, volume),
         "previous_plan": tools["get_previous_plan"](),
+        "last_week_exercises": last_week_exercises(repo, week),
+    }
+
+
+def last_week_exercises(repo: SQLiteRepository, week: date) -> dict[str, str]:
+    """The exercises the plan for the week before this one used, id -> title (#63).
+
+    Not `previous_plan`, which is the latest plan of *any* week -- after a
+    replan that is this week's own earlier draft, and keeping a draft's
+    exercises says nothing about progression. Progress is read week to week, so
+    the comparison is with last week's plan. Empty when there was none.
+    """
+    plan = repo.latest_plan(week - timedelta(days=7))
+    if plan is None:
+        return {}
+    return {
+        exercise.exercise_template_id: exercise.title
+        for session in plan.sessions
+        for exercise in session.exercises
     }
 
 
@@ -346,6 +370,8 @@ def derive_summaries(context: dict[str, Any]) -> dict[str, Any]:
         "constraints_summary": constraints_summary(context),
         "run_after_legs_rule": run_after_legs_rule(context),
         "replan_note": replan_note(context),
+        "ramp_note": ramp_note(context),
+        "continuity_exercises": continuity_exercises(context),
     }
 
 
@@ -420,6 +446,38 @@ def replan_note(context: dict[str, Any]) -> str:
     return (
         "\nA previous attempt at this week was rejected because it broke these"
         f" rules:\n{listed}\nPlan the week again so that none of them happens.\n"
+    )
+
+
+def ramp_note(context: dict[str, Any]) -> str:
+    """The ramp after a break, for the rationale (#62), or the absence of one.
+
+    Stated because the deficit table above it still reads against the full
+    target: after two months off every muscle is a full target short, and a
+    planner told only that would call a half-volume week a sacrifice.
+    """
+    ramp = ((context.get("ledger_state") or {}).get("ramp")) or {}
+    if not ramp.get("note"):
+        return "No break from lifting in recent weeks; set counts follow the full weekly target."
+    return (
+        f"{ramp['note']} Set counts are worked out from the reduced target after"
+        " you; mention the ramp in the rationale, and do not describe the lower"
+        " volume as a sacrifice in trade_offs."
+    )
+
+
+def continuity_exercises(context: dict[str, Any]) -> str:
+    """Last week's exercises, rendered for rule 3c (#63)."""
+    last = context.get("last_week_exercises") or {}
+    if not last:
+        return "  (no plan for last week, so nothing to keep)"
+    pool = {
+        row.get("exercise_template_id") or row.get("id")
+        for row in context.get("exercise_pool") or []
+    }
+    return "\n".join(
+        f"  {template_id}  {title}" + ("" if template_id in pool else "  (not in this week's pool)")
+        for template_id, title in sorted(last.items(), key=lambda item: item[1])
     )
 
 
