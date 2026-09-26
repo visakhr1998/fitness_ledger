@@ -76,8 +76,8 @@ Rep ranges are configured, not inferred. A logged set records what you did, not
 what you intended, and a heavy top set followed by a lighter back-off set looks
 the same as a failed attempt. For that reason only sets at the session's
 heaviest weight count towards the decision. The default range comes from
-`.env`; a per-exercise range can be set through `PUT /api/rep-ranges` (there is
-no screen for this yet).
+`.env`; a per-exercise range is set on the Gym screen, under the exercise in the
+exercise tracker, where **Use default** removes it again.
 
 ## Goal progress
 
@@ -122,10 +122,11 @@ Before a plan is shown, it is checked against these rules:
 
 A plan that breaks a rule is sent back to the planner with the reason and
 redrafted, up to three attempts in total (`COACH_MAX_PLAN_ATTEMPTS`). If every attempt breaks a rule, the attempt with
-the fewest problems is shown with those problems listed. The limits are stored
-in the database's `user_settings` table (`max_sets_per_session`,
-`min_rest_days_same_muscle`, `allow_run_after_leg_day` and others); there is no
-screen or command for them yet.
+the fewest problems is shown with those problems listed. The limits are edited
+on the Week screen under **Edit limits** (in **How this was built**, or on the
+empty-week card before the first plan). Changing them does not re-plan a week
+already stored; it changes what the next plan is built within and what the
+current one is checked against.
 
 ## Warning rules
 

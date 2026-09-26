@@ -452,6 +452,26 @@ def planning_preferences(repo: SQLiteRepository) -> Preferences:
     return Preferences(**values)
 
 
+def save_planning_preferences(repo: SQLiteRepository, preferences: Preferences) -> Preferences:
+    """Store the planning limits, keeping only what differs from the default.
+
+    A value equal to the default is cleared rather than written, so a later
+    change to a default in planning.py still reaches a user who saved the form
+    without touching that field -- `MAX_SETS_PER_EXERCISE` has moved once
+    already (#69).
+    """
+    default = Preferences()
+    for field, key in PLANNING_SETTING_KEYS.items():
+        value = getattr(preferences, field)
+        repo.set_setting(key, None if value == getattr(default, field) else str(value))
+    allow = preferences.allow_run_after_leg_day
+    repo.set_setting(
+        ALLOW_RUN_AFTER_LEGS_KEY,
+        None if allow == default.allow_run_after_leg_day else ("true" if allow else "false"),
+    )
+    return planning_preferences(repo)
+
+
 # How far back to look for a break. Long enough to see training before the
 # longest layoff the ramp schedule still acts on.
 RAMP_LOOKBACK_WEEKS = 16

@@ -121,6 +121,14 @@ export type ExerciseDetail = {
     verdict: string;
     stalled: boolean;
   };
+  /** Numbers for the editor; `progression.rep_range` is the display string. */
+  rep_range: {
+    low: number;
+    high: number;
+    default_low: number;
+    default_high: number;
+    custom: boolean;
+  };
   volume: {
     sets_per_bucket: Bucket[];
     tonnage_per_bucket: Bucket[];
@@ -128,6 +136,15 @@ export type ExerciseDetail = {
     total_tonnage_kg: number;
   };
   sessions: number;
+};
+
+/** The hard constraints planning.Preferences carries, from user_settings. */
+export type PlanningLimits = {
+  min_sets_per_exercise: number;
+  max_sets_per_exercise: number;
+  max_sets_per_session: number;
+  min_rest_days_same_muscle: number;
+  allow_run_after_leg_day: boolean;
 };
 
 /** A stored training week. Set counts were computed from the deficit, never
@@ -169,13 +186,7 @@ export type PlanSection = {
   rules?: {
     priority_order: string[];
     set_counts_from: string;
-    limits: {
-      min_sets_per_exercise: number;
-      max_sets_per_exercise: number;
-      max_sets_per_session: number;
-      min_rest_days_same_muscle: number;
-      allow_run_after_leg_day: boolean;
-    };
+    limits: PlanningLimits;
   };
   adherence: {
     not_started: boolean;
@@ -464,6 +475,15 @@ export const api = {
   targets: () => get<VolumeTarget[]>("/api/targets"),
   setTargets: (rows: { muscle_group: string; sets_per_week: number; frequency_per_week: number }[]) =>
     send<{ updated: number }>("/api/targets", "PUT", rows),
+  setRepRange: (exercise_template_id: string, rep_low: number, rep_high: number) =>
+    send<{ status: string }>("/api/rep-ranges", "PUT", { exercise_template_id, rep_low, rep_high }),
+  /** Drop the override so the configured default range applies again. */
+  resetRepRange: (id: string) =>
+    send<{ reset: boolean }>(`/api/rep-ranges/${encodeURIComponent(id)}`, "DELETE"),
+  planningLimits: () =>
+    get<{ limits: PlanningLimits; defaults: PlanningLimits }>("/api/planning-limits"),
+  setPlanningLimits: (limits: PlanningLimits) =>
+    send<{ limits: PlanningLimits; defaults: PlanningLimits }>("/api/planning-limits", "PUT", limits),
   setRunningTarget: (distance_km_per_week: number, sessions_per_week: number) =>
     send<unknown>("/api/running-target", "PUT", { distance_km_per_week, sessions_per_week }),
   /** Propose goals from a description. Writes nothing — the caller saves.

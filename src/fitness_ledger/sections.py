@@ -332,9 +332,10 @@ def exercise_detail(
     overrides = rep_ranges(repo, config)
     default = RepRange(config.rep_range_low, config.rep_range_high)
 
+    rep_range = overrides.get(template_id, default)
     state = progression_state(
         sets, template_id, template.title,
-        rep_range=overrides.get(template_id, default),
+        rep_range=rep_range,
         equipment_category=template.equipment_category,
     )
 
@@ -380,6 +381,14 @@ def exercise_detail(
             ),
         },
         "progression": {**state.as_dict(), "stalled": stalled(sets, template_id)},
+        # Numbers for the editor; `progression.rep_range` is the display string.
+        "rep_range": {
+            "low": rep_range.low,
+            "high": rep_range.high,
+            "default_low": default.low,
+            "default_high": default.high,
+            "custom": template_id in overrides,
+        },
         "volume": {
             "sets_per_bucket": _bucket(volume_rows, size, config.week_starts_on),
             "tonnage_per_bucket": _bucket(tonnage_rows, size, config.week_starts_on),
