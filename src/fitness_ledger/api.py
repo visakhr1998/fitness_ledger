@@ -8,6 +8,7 @@ settings, an explicitly triggered sync, and approval-gated Hevy write-back.
 from __future__ import annotations
 
 import json
+from dataclasses import asdict
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -21,6 +22,7 @@ from . import queries, sections, writeback
 from .config import Config
 from .db import SQLiteRepository
 from .models import VolumeTarget
+from .planning import Preferences
 from .queries import WindowError
 
 WEB_DIR = Path(__file__).parent / "web"
@@ -235,6 +237,65 @@ def write_rep_range(update: RepRangeUpdate) -> dict[str, str]:
     with repo() as repository:
         repository.set_rep_range(update.exercise_template_id, update.rep_low, update.rep_high)
     return {"status": "ok"}
+
+
+@app.delete("/api/rep-ranges/{template_id}")
+def reset_rep_range(template_id: str) -> dict[str, Any]:
+    """Drop the override, so the configured default range applies again."""
+    with repo() as repository:
+        return {"exercise_template_id": template_id, "reset": repository.delete_rep_range(template_id)}
+
+
+# --- planning limits --------------------------------------------------------
+# The hard constraints `planning.Preferences` carries. Stored in user_settings;
+# until now only editable in SQLite.
+
+
+class PlanningLimitsUpdate(BaseModel):
+    """The whole set at once, because the fields bound each other.
+
+    Lower bounds are what planning.py relies on: `_fit_session` reads a
+    session ceiling of 0 as "no ceiling", `_clamp_sets` assumes min <= max, and
+    a rest gap of 0 is the documented off switch. The upper bounds are sanity
+    caps, not planner assumptions.
+    """
+
+    min_sets_per_exercise: int = Field(ge=1, le=10)
+    max_sets_per_exercise: int = Field(ge=1, le=10)
+    max_sets_per_session: int = Field(ge=1, le=60)
+    min_rest_days_same_muscle: int = Field(ge=0, le=6)
+    allow_run_after_leg_day: bool
+
+
+def _limits_body(preferences: Preferences) -> dict[str, Any]:
+    return {"limits": asdict(preferences), "defaults": asdict(Preferences())}
+
+
+@app.get("/api/planning-limits")
+def read_planning_limits() -> dict[str, Any]:
+    with repo() as repository:
+        return _limits_body(queries.planning_preferences(repository))
+
+
+@app.put("/api/planning-limits")
+def write_planning_limits(update: PlanningLimitsUpdate) -> dict[str, Any]:
+    if update.min_sets_per_exercise > update.max_sets_per_exercise:
+        raise HTTPException(
+            status_code=400,
+            detail="min_sets_per_exercise must not exceed max_sets_per_exercise",
+        )
+    if update.max_sets_per_exercise > update.max_sets_per_session:
+        # Otherwise one exercise at its cap overflows the day and is trimmed
+        # below the cap the user just set.
+        raise HTTPException(
+            status_code=400,
+            detail="max_sets_per_exercise must not exceed max_sets_per_session",
+        )
+    with repo() as repository:
+        saved = queries.save_planning_preferences(
+            repository, Preferences(**update.model_dump())
+        )
+        return _limits_body(saved)
 
 
 # --- v0.3 Run / Gym sections ----------------------------------------------
