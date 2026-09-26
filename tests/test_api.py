@@ -6,7 +6,7 @@ handling rather than re-testing the maths.
 
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import asdict, replace
 from datetime import date, timedelta
 
 import pytest
@@ -15,6 +15,7 @@ from fastapi.testclient import TestClient
 from fitness_ledger import api, queries
 from fitness_ledger.db import SQLiteRepository
 from fitness_ledger.models import ExerciseTemplate, VolumeTarget
+from fitness_ledger.planning import Preferences
 
 TODAY = date.today()
 
@@ -164,6 +165,109 @@ def test_rep_range_changes_progression_verdict(client):
     client.put("/api/rep-ranges", json={"exercise_template_id": "BENCH", "rep_low": 6, "rep_high": 8})
     after = {r["exercise_template_id"]: r for r in client.get("/api/progression").json()}
     assert after["BENCH"]["ready_to_progress"] is True
+
+
+def test_exercise_detail_carries_the_rep_range_the_editor_starts_from(client):
+    before = client.get("/api/exercises/BENCH").json()["rep_range"]
+    assert before["custom"] is False
+    assert (before["low"], before["high"]) == (before["default_low"], before["default_high"])
+
+    client.put("/api/rep-ranges", json={"exercise_template_id": "BENCH", "rep_low": 5, "rep_high": 7})
+    after = client.get("/api/exercises/BENCH").json()
+    assert after["rep_range"] == {**before, "low": 5, "high": 7, "custom": True}
+    assert after["progression"]["rep_range"] == "5-7"
+
+
+def test_resetting_a_rep_range_restores_the_default(client):
+    client.put("/api/rep-ranges", json={"exercise_template_id": "BENCH", "rep_low": 5, "rep_high": 7})
+    assert client.delete("/api/rep-ranges/BENCH").json() == {
+        "exercise_template_id": "BENCH", "reset": True,
+    }
+    rep_range = client.get("/api/exercises/BENCH").json()["rep_range"]
+    assert rep_range["custom"] is False
+    assert (rep_range["low"], rep_range["high"]) == (rep_range["default_low"], rep_range["default_high"])
+
+    # Nothing left to reset is not an error: the default already applies.
+    assert client.delete("/api/rep-ranges/BENCH").json()["reset"] is False
+
+
+@pytest.mark.parametrize("low, high", [(0, 8), (6, 51)])
+def test_rep_range_bounds_are_enforced(client, low, high):
+    res = client.put("/api/rep-ranges", json={"exercise_template_id": "BENCH", "rep_low": low, "rep_high": high})
+    assert res.status_code == 422
+
+
+# --- planning limits --------------------------------------------------------
+
+LIMITS = {
+    "min_sets_per_exercise": 3,
+    "max_sets_per_exercise": 5,
+    "max_sets_per_session": 20,
+    "min_rest_days_same_muscle": 2,
+    "allow_run_after_leg_day": True,
+}
+
+
+def test_planning_limits_start_at_the_planner_defaults(client):
+    body = client.get("/api/planning-limits").json()
+    assert body["limits"] == body["defaults"]
+    assert body["defaults"] == asdict(Preferences())
+
+
+def test_planning_limits_round_trip_into_what_the_planner_reads(client, tmp_path):
+    res = client.put("/api/planning-limits", json=LIMITS)
+    assert res.status_code == 200
+    assert res.json()["limits"] == LIMITS
+
+    with SQLiteRepository(tmp_path / "api.db", 120) as repo:
+        assert queries.planning_preferences(repo) == Preferences(**LIMITS)
+    # The Week tab's rules panel reads the same values.
+    assert client.get("/api/plan").json()["rules"]["limits"] == LIMITS
+
+
+def test_a_limit_saved_at_its_default_is_not_stored(client, tmp_path):
+    """So a later change to a default in planning.py still reaches this user."""
+    client.put("/api/planning-limits", json=LIMITS)
+    client.put("/api/planning-limits", json=asdict(Preferences()))
+
+    with SQLiteRepository(tmp_path / "api.db", 120) as repo:
+        stored = set(repo.get_settings())
+    assert stored.isdisjoint(set(queries.PLANNING_SETTING_KEYS.values()) | {queries.ALLOW_RUN_AFTER_LEGS_KEY})
+
+
+@pytest.mark.parametrize("field, value", [
+    ("min_sets_per_exercise", 0),
+    ("max_sets_per_exercise", 11),
+    ("max_sets_per_session", 0),  # 0 reads as "no ceiling" inside planning.py
+    ("max_sets_per_session", 61),
+    ("min_rest_days_same_muscle", -1),
+    ("min_rest_days_same_muscle", 7),
+])
+def test_planning_limits_out_of_bounds_are_refused(client, field, value):
+    res = client.put("/api/planning-limits", json={**LIMITS, field: value})
+    assert res.status_code == 422
+    assert client.get("/api/planning-limits").json()["limits"] == asdict(Preferences())
+
+
+@pytest.mark.parametrize("change, message", [
+    ({"min_sets_per_exercise": 5, "max_sets_per_exercise": 4}, "min_sets_per_exercise"),
+    ({"max_sets_per_exercise": 8, "max_sets_per_session": 6}, "max_sets_per_session"),
+])
+def test_planning_limits_that_contradict_each_other_are_a_400(client, change, message):
+    res = client.put("/api/planning-limits", json={**LIMITS, **change})
+    assert res.status_code == 400
+    assert message in res.json()["detail"]
+    assert client.get("/api/planning-limits").json()["limits"] == asdict(Preferences())
+
+
+def test_planning_limits_need_every_field(client):
+    partial = {key: value for key, value in LIMITS.items() if key != "max_sets_per_session"}
+    assert client.put("/api/planning-limits", json=partial).status_code == 422
+
+
+def test_planning_limits_are_refused_from_another_site(client):
+    res = client.put("/api/planning-limits", json=LIMITS, headers={"origin": "https://evil.example"})
+    assert res.status_code == 403
 
 
 def test_insights_flag_the_stalled_lift(client):

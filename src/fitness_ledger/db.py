@@ -1037,6 +1037,14 @@ class SQLiteRepository:
         )
         self.conn.commit()
 
+    def delete_rep_range(self, exercise_template_id: str) -> bool:
+        cur = self.conn.execute(
+            "DELETE FROM exercise_progression WHERE exercise_template_id = ?",
+            (exercise_template_id,),
+        )
+        self.conn.commit()
+        return cur.rowcount > 0
+
     def get_sleep_minutes(self, start: date, end: date) -> dict[date, float]:
         """Sleep minutes keyed by the morning woken, for the recovery rule."""
         return {

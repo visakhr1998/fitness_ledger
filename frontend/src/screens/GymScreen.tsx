@@ -324,6 +324,7 @@ function ExerciseExplorer({ catalog, range }: { catalog: ExerciseSummary[]; rang
   const [selected, setSelected] = useState<string | null>(null);
   const [detail, setDetail] = useState<ExerciseDetail | null>(null);
   const [loading, setLoading] = useState(false);
+  const [rangeVersion, setRangeVersion] = useState(0);
 
   useEffect(() => {
     if (!selected && catalog.length) setSelected(catalog[0].id);
@@ -337,7 +338,7 @@ function ExerciseExplorer({ catalog, range }: { catalog: ExerciseSummary[]; rang
       .then((result) => !cancelled && setDetail(result))
       .finally(() => !cancelled && setLoading(false));
     return () => { cancelled = true; };
-  }, [selected, range.window, range.start, range.end]);
+  }, [selected, range.window, range.start, range.end, rangeVersion]);
 
   const filtered = useMemo(() => {
     const needle = query.trim().toLowerCase();
@@ -394,14 +395,24 @@ function ExerciseExplorer({ catalog, range }: { catalog: ExerciseSummary[]; rang
 
         <div style={{ minWidth: 0 }}>
           {loading && !detail && <Loading />}
-          {detail && <ExerciseDetailPanel detail={detail} />}
+          {detail && (
+            <ExerciseDetailPanel
+              detail={detail}
+              onRangeSaved={() => setRangeVersion((value) => value + 1)}
+            />
+          )}
         </div>
       </div>
     </Card>
   );
 }
 
-function ExerciseDetailPanel({ detail }: { detail: ExerciseDetail }) {
+function ExerciseDetailPanel({
+  detail, onRangeSaved,
+}: {
+  detail: ExerciseDetail;
+  onRangeSaved: () => void;
+}) {
   // Every chart in this repo ships a table twin; these two were the exceptions.
   // The panel does not use `Card`, which is what carries the toggle elsewhere,
   // so each caption row grows one instead.
@@ -463,6 +474,14 @@ function ExerciseDetailPanel({ detail }: { detail: ExerciseDetail }) {
         </div>
       </div>
 
+      <RepRangeEditor
+        // Keyed so switching exercise, or a save, restarts the draft from the server.
+        key={`${detail.exercise.id}:${detail.rep_range.low}-${detail.rep_range.high}`}
+        exerciseId={detail.exercise.id}
+        repRange={detail.rep_range}
+        onSaved={onRangeSaved}
+      />
+
       <div>
         <div style={ChartHeading}>
           <span style={{ fontSize: 13, color: "var(--text-secondary)" }}>
@@ -514,6 +533,132 @@ const ChartHeading = {
   gap: 10,
   marginBottom: 4,
 } as const;
+
+// The API's own bounds (`RepRangeUpdate` in api.py).
+const MIN_REPS = 1;
+const MAX_REPS = 50;
+
+/** Edit the double-progression range for one exercise.
+ *
+ *  Rep ranges are configuration, never inferred from what was logged, and the
+ *  only way to set one used to be `PUT /api/rep-ranges` by hand. The verdict
+ *  above reads it, so a save refetches the panel rather than patching it. */
+function RepRangeEditor({
+  exerciseId, repRange, onSaved,
+}: {
+  exerciseId: string;
+  repRange: ExerciseDetail["rep_range"];
+  onSaved: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [low, setLow] = useState(String(repRange.low));
+  const [high, setHigh] = useState(String(repRange.high));
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const lowValue = Number(low);
+  const highValue = Number(high);
+  const valid = (text: string, value: number) =>
+    text.trim() !== "" && Number.isInteger(value) && value >= MIN_REPS && value <= MAX_REPS;
+  const problem = !valid(low, lowValue) || !valid(high, highValue)
+    ? `Reps must be whole numbers ${MIN_REPS}–${MAX_REPS}`
+    : lowValue > highValue
+      ? "The bottom of the range cannot be above the top"
+      : null;
+  const changed = lowValue !== repRange.low || highValue !== repRange.high;
+
+  const run = async (work: () => Promise<unknown>) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await work();
+      setOpen(false);
+      onSaved();
+    } catch (exc) {
+      setError(readable(exc));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const blocked = busy || !changed || problem !== null;
+  const inputStyle = {
+    width: 52, background: "var(--surface-raised)", color: "var(--text-primary)",
+    border: "1px solid var(--border)", borderRadius: 8, padding: "5px 8px", fontSize: 13,
+  } as const;
+
+  return (
+    <div style={{ fontSize: 13 }}>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 10, alignItems: "center" }}>
+        <span style={{ color: "var(--text-secondary)" }}>
+          Rep range {repRange.low}–{repRange.high}
+          <span style={{ color: "var(--text-muted)", fontSize: 12 }}>
+            {repRange.custom ? " · set for this exercise" : " · default"}
+          </span>
+        </span>
+        <button
+          onClick={() => setOpen((value) => !value)}
+          aria-expanded={open}
+          style={{ fontSize: 13, color: "var(--accent)", background: "transparent", padding: 0 }}
+        >
+          {open ? "Cancel" : "Change"}
+        </button>
+      </div>
+
+      {open && (
+        <div style={{ marginTop: 10 }}>
+          <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 8 }}>
+            Add weight once every working set at the top weight reaches the top of
+            the range. The default for every exercise is {repRange.default_low}–{repRange.default_high}.
+          </div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
+            <input
+              type="number" min={MIN_REPS} max={MAX_REPS} step={1} inputMode="numeric"
+              value={low} aria-label="Lowest reps"
+              onChange={(event) => setLow(event.target.value)}
+              style={inputStyle}
+            />
+            <span style={{ color: "var(--text-muted)" }}>to</span>
+            <input
+              type="number" min={MIN_REPS} max={MAX_REPS} step={1} inputMode="numeric"
+              value={high} aria-label="Highest reps"
+              onChange={(event) => setHigh(event.target.value)}
+              style={inputStyle}
+            />
+            <span style={{ color: "var(--text-muted)" }}>reps</span>
+            <button
+              onClick={() => run(() => api.setRepRange(exerciseId, lowValue, highValue))}
+              disabled={blocked}
+              style={{
+                padding: "6px 14px", borderRadius: "var(--radius-control)",
+                background: "var(--accent)", color: "var(--bg)", fontSize: 13, fontWeight: 600,
+                opacity: blocked ? 0.5 : 1, cursor: blocked ? "default" : "pointer",
+              }}
+            >
+              {busy ? "Saving…" : "Save"}
+            </button>
+            {repRange.custom && (
+              <button
+                onClick={() => run(() => api.resetRepRange(exerciseId))}
+                disabled={busy}
+                style={{ fontSize: 12, color: "var(--text-secondary)", background: "transparent", padding: 0 }}
+              >
+                Use default
+              </button>
+            )}
+          </div>
+          {problem && (
+            <div role="alert" style={{ marginTop: 6, fontSize: 12, color: "var(--critical)" }}>{problem}</div>
+          )}
+          {error && (
+            <div role="alert" style={{ marginTop: 6, fontSize: 12, color: "var(--critical)" }}>{error}</div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 
 function Stat({ label, value, tone }: { label: string; value: string; tone?: string }) {
   return (
